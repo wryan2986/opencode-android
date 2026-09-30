@@ -1,0 +1,22 @@
+# Gradle / Android build output
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+*.ap_
+*.dex
+
+# Captures and profiling
+captures/
+.profiling/
+*.hprof
+
+# IDE
+.idea/
+*.iml
+.kotlin/
+
+# OS noise
+.DS_Store
+Thumbs.db
