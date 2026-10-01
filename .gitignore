@@ -20,3 +20,7 @@ captures/
 # OS noise
 .DS_Store
 Thumbs.db
+# Signing material — never commit
+keystore.properties
+*.jks
+*.keystore

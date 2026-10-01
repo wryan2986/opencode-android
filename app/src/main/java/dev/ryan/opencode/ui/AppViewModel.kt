@@ -185,7 +185,14 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     // ---- ssh ----
 
-    val ssh = SshManager(getApplication(), viewModelScope)
+    val ssh = SshManager(
+        getApplication(),
+        viewModelScope,
+        apiProvider = { connection.api },
+        baseProvider = { connection.requireBase() },
+        httpClient = { connection.httpClient },
+        directoryProvider = { settings.value.directory },
+    )
     val sshProfiles = ssh.profiles
     val sshBusy = ssh.busy
     val sshError = ssh.error
@@ -214,6 +221,28 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
     fun sshFingerprint(): String = ssh.fingerprint()
 
     fun deleteSshKey() = ssh.deleteKey()
+
+    private val _sshEnrolling = MutableStateFlow(false)
+    val sshEnrolling: StateFlow<Boolean> = _sshEnrolling.asStateFlow()
+
+    private val _sshEnrollMessage = MutableStateFlow<String?>(null)
+    val sshEnrollMessage: StateFlow<String?> = _sshEnrollMessage.asStateFlow()
+
+    /**
+     * Write this device's key into the server's `authorized_keys` over the opencode
+     * session, so SSH needs no manual step at all.
+     */
+    fun enrollSshKey() {
+        if (_sshEnrolling.value) return
+        viewModelScope.launch {
+            _sshEnrolling.value = true
+            _sshEnrollMessage.value = null
+            ssh.enrollKeyViaOpencode()
+                .onSuccess { _sshEnrollMessage.value = "Added. You can use SSH now." }
+                .onFailure { _sshEnrollMessage.value = it.message ?: "Could not add the key." }
+            _sshEnrolling.value = false
+        }
+    }
 
     /** Switch the terminal onto an SSH profile. */
     fun useSsh(profile: SshProfile, cols: Int = 100, rows: Int = 30) {

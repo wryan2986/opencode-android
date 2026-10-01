@@ -22,15 +22,31 @@ android {
     }
 
     signingConfigs {
-        // Optional release signing: create keystore.properties to enable.
+        // Release signing comes from keystore.properties (gitignored) or the
+        // OPENCODE_* environment variables. `scripts/make-keystore.sh` sets it up.
+        //
+        // Evaluated lazily and tolerantly on purpose: signingConfigs are resolved
+        // when the build file is read, so throwing here would break plain
+        // `assembleDebug` for anyone who has not made a keystore yet. A missing
+        // key therefore falls back to debug signing rather than failing the build.
         val propsFile = rootProject.file("keystore.properties")
-        if (propsFile.exists()) {
-            val p = Properties().apply { propsFile.inputStream().use { load(it) } }
+        val props = Properties().apply {
+            if (propsFile.exists()) propsFile.inputStream().use { load(it) }
+        }
+        fun secret(key: String, env: String): String? =
+            (System.getenv(env) ?: props.getProperty(key, "")).takeIf { it.isNotBlank() }
+
+        val storeFile = secret("storeFile", "OPENCODE_KEYSTORE")
+        val storePass = secret("storePassword", "OPENCODE_STORE_PASSWORD")
+        val alias = secret("keyAlias", "OPENCODE_KEY_ALIAS")
+        val keyPass = secret("keyPassword", "OPENCODE_KEY_PASSWORD")
+
+        if (listOf(storeFile, storePass, alias, keyPass).all { it != null }) {
             create("release") {
-                storeFile = rootProject.file(p.getProperty("storeFile"))
-                storePassword = p.getProperty("storePassword")
-                keyAlias = p.getProperty("keyAlias")
-                keyPassword = p.getProperty("keyPassword")
+                this.storeFile = rootProject.file(storeFile!!)
+                storePassword = storePass
+                keyAlias = alias
+                keyPassword = keyPass
             }
         }
     }
@@ -44,9 +60,15 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            val hasRelease = signingConfigs.findByName("release") != null
-            signingConfig = if (hasRelease) signingConfigs.getByName("release") else signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release") ?: signingConfigs.getByName("debug")
         }
+    }
+
+    // sshj is reflection-heavy and ProGuard will strip the JCE provider wiring it
+    // relies on, which shows up as a NoSuchAlgorithmException at runtime rather
+    // than at build time. Keep its internals.
+    packaging {
+        resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE*", "META-INF/NOTICE*")
     }
 
     compileOptions {

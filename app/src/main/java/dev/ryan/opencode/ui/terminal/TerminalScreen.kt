@@ -141,6 +141,8 @@ fun TerminalScreen() {
     val sshProfiles by vm.sshProfiles.collectAsState()
     val sshBusy by vm.sshBusy.collectAsState()
     val sshError by vm.sshError.collectAsState()
+    val sshEnrolling by vm.sshEnrolling.collectAsState()
+    val sshEnrollMessage by vm.sshEnrollMessage.collectAsState()
     // Generated once per composition of the sheet so the key exists by the time
     // it is displayed; creating it here means "add a host" is the only tap needed.
     val keyFp = remember { if (showRouteSheet) vm.sshFingerprint() else "" }
@@ -335,6 +337,10 @@ fun TerminalScreen() {
                 currentIsSsh = usingSsh,
                 keyFingerprint = keyFp,
                 publicKey = publicKey,
+                enrollAvailable = settings.configured,
+                enrolling = sshEnrolling,
+                enrollMessage = sshEnrollMessage,
+                onEnroll = { vm.enrollSshKey() },
                 onUseOpencode = {
                     vm.useOpencode(lastSize.first, lastSize.second)
                     showRouteSheet = false

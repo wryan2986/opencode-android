@@ -85,6 +85,25 @@ class ServerDiscovery(
     }
 
     /**
+     * Merge in whatever mDNS turned up, without losing the ordering above.
+     *
+     * mDNS hosts go last: they are the least certain, and the known host plus the
+     * tailnet name have already answered on every previous run.
+     */
+    fun candidatesWith(
+        knownHost: String,
+        mdnsHosts: List<String>,
+        extraHosts: List<String> = emptyList(),
+    ): List<String> {
+        val base = candidates(knownHost, extraHosts)
+        val seen = base.map { it.substringAfter("//").substringBefore(':').lowercase() }.toSet()
+        val fresh = mdnsHosts
+            .filter { it.isNotBlank() }
+            .filterNot { seen.contains(it.trimEnd('.').lowercase()) }
+        return base + fresh.map(::withDefaultPort)
+    }
+
+    /**
      * Probe every candidate with the stored token, all at once.
      *
      * They race rather than queue: a dead host would otherwise cost a full
@@ -94,9 +113,10 @@ class ServerDiscovery(
     suspend fun discover(
         knownHost: String,
         token: String,
+        mdnsHosts: List<String> = emptyList(),
         extraHosts: List<String> = emptyList(),
     ): List<DiscoveredServer> = coroutineScope {
-        candidates(knownHost, extraHosts)
+        candidatesWith(knownHost, mdnsHosts, extraHosts)
             .map { host -> async(Dispatchers.IO) { probe(host, token) } }
             .awaitAll()
     }

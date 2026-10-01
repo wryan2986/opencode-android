@@ -49,6 +49,10 @@ fun RouteSheet(
     currentIsSsh: Boolean,
     keyFingerprint: String,
     publicKey: String,
+    enrollAvailable: Boolean,
+    enrolling: Boolean,
+    enrollMessage: String?,
+    onEnroll: () -> Unit,
     onUseOpencode: () -> Unit,
     onUseSsh: (SshProfile) -> Unit,
     onCreateProfile: (String, String, String, Int) -> Unit,
@@ -201,6 +205,28 @@ fun RouteSheet(
                     style = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace),
                     color = Color(0xFF6B7280),
                 )
+
+                // The zero-typing path: the paired opencode session can write this
+                // key itself, because it can already run any command on the host.
+                if (enrollAvailable) {
+                    Spacer(Modifier.height(8.dp))
+                    Button(onClick = onEnroll, enabled = !enrolling) {
+                        Text(if (enrolling) "Adding…" else "Add it for me")
+                    }
+                    Text(
+                        "Uses the opencode connection you already have. No copying.",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                enrollMessage?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = if (it.startsWith("Added")) Color(0xFF4ADE80) else Color(0xFFF87171),
+                    )
+                }
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },

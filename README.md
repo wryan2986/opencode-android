@@ -36,56 +36,48 @@ TCP connection means lost output and a manual reconnect. This app never does tha
 
 ## Setup
 
-### 1. Server
+Two things: one command on the server, the app on the phone.
 
-A systemd unit is already installed on the box:
-
-```bash
-systemctl status opencode-server
-sudo cat /etc/opencode/server.env     # root-only, holds the password
-```
-
-It runs `opencode serve` bound to the Tailscale IP only, with the password in a
-root-owned env file, and restarts on failure. Nothing is exposed to the public
-internet — Tailscale addresses are not routable.
-
-### 2. Phone
-
-1. Install Tailscale on the phone and connect to the same tailnet.
-2. Sideload the APK:
-   ```bash
-   adb install -r app/build/outputs/apk/debug/app-debug.apk
-   ```
-   Or copy `app-debug.apk` to the phone and open it (allow "install from unknown
-   sources").
-3. In the app, tap the **Tailscale** preset to fill in the address.
-4. Mint a pairing code **against the serve instance on port 4096**:
-   ```bash
-   curl -u opencode:$(sudo grep PASSWORD /etc/opencode/server.env | cut -d= -f2) \
-        -X POST http://100.102.124.47:4096/api/pair
-   ```
-   It prints `{"code":"...","expires_in":300}`.
-
-   > **Do not use bare `opencode pair`.** That command talks to the *background
-   > service* on `127.0.0.1:49374`, not the `opencode serve` instance the app
-   > connects to. Pairing codes are stored per instance, so a 49374 code is
-   > rejected by 4096 with `401 Pairing link expired or already used` — a
-   > confusing failure that looks like an expired code. `--url` only rewrites the
-   > link that gets printed; it does not move the code to the other instance.
-5. Type the code into the app and tap **Pair**. It expires after 5 minutes.
-
-The pairing code is **case-sensitive** and may contain `-` and `_`. The app displays
-it in uppercase but stores it exactly as typed. Your server password is never
-written to the device — only a session token is.
-
-To check a code before typing it in:
+### Server
 
 ```bash
-CODE=...
-curl -s http://100.102.124.47:4096/auth/connect/$CODE   # 200 = good, 401 = wrong instance or expired
+curl -fsSL https://raw.githubusercontent.com/<you>/opencode-android/main/install.sh | sudo sh
 ```
 
-Note this consumes the code, so only use it to diagnose a failure.
+That installs or reconfigures the headless server and prints a pairing QR. It is
+idempotent — re-running rotates nothing and does not duplicate the unit — and it
+preserves an existing password unless you delete `/etc/opencode/server.env`.
+
+It picks the bind address for you: Tailscale if present, otherwise LAN, and it
+warns rather than silently exposing `0.0.0.0`. It also publishes `_opencode._tcp`
+over mDNS so a phone on the same Wi-Fi finds the server without typing anything.
+
+### Phone
+
+Install the app, then scan the QR (or type the code). Everything after that is
+automatic.
+
+## Build
+
+```bash
+./gradlew assembleDebug        # APK
+./gradlew testDebugUnitTest    # 150 tests
+./gradlew installDebug
+```
+
+### Release build
+
+```bash
+./scripts/make-keystore.sh     # once; writes a gitignored keystore
+export OPENCODE_STORE_PASSWORD=...
+export OPENCODE_KEY_PASSWORD=...
+./gradlew assembleRelease
+```
+
+Passwords are read from the environment, so the secret never lands in
+`keystore.properties`. Without them the release build silently falls back to debug
+signing rather than failing — deliberate, so `assembleDebug` still works for
+anyone who has not made a key.
 
 ## Build
 

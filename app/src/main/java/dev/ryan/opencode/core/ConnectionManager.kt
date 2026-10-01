@@ -29,6 +29,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterIsInstance
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
@@ -110,6 +112,8 @@ class ConnectionManager(
 
     /** Everything the last discovery run probed, reachable or not. */
     val discovered: StateFlow<List<DiscoveredServer>> = _discovered.asStateFlow()
+
+    private val mdns = MdnsDiscovery(context)
 
     private val _discoveryBusy = MutableStateFlow(false)
     val discoveryBusy: StateFlow<Boolean> = _discoveryBusy.asStateFlow()
@@ -193,7 +197,16 @@ class ConnectionManager(
         _discoveryBusy.value = true
         _state.value = ConnectionState.Connecting
         try {
-            val results = discovery.discover(s.host, s.sessionToken)
+            // mDNS runs alongside the fixed candidates rather than before them: a
+            // LAN that does not answer mDNS must not delay the tailnet probe.
+            val results = coroutineScope {
+                val browsed = async { runCatching { mdns.browse() }.getOrDefault(emptyList()) }
+                discovery.discover(
+                    knownHost = s.host,
+                    token = s.sessionToken,
+                    mdnsHosts = browsed.await(),
+                )
+            }
             _discovered.value = results
             val live = results.filter { it.reachable }
             Log.i(TAG, "discovery: ${live.size}/${results.size} reachable ${live.map { it.host }}")
@@ -285,6 +298,9 @@ class ConnectionManager(
         connect(_settings.value)
         return pairingCode
     }
+
+    /** The live base URL, for callers that cannot run before a connect. */
+    fun requireBase(): okhttp3.HttpUrl = base ?: error("opencode is not configured yet")
 
     private suspend fun connect(s: AppSettings) {
         _state.value = ConnectionState.Connecting

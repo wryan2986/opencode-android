@@ -3,6 +3,9 @@ package dev.ryan.opencode.core.ssh
 import android.app.Application
 import android.util.Log
 import dev.ryan.opencode.core.TerminalLink
+import dev.ryan.opencode.core.net.OpencodeClient
+import dev.ryan.opencode.core.net.PtyCapture
+import okhttp3.OkHttpClient
 import dev.ryan.opencode.core.model.DisconnectReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -25,6 +28,10 @@ import kotlinx.coroutines.withContext
 class SshManager(
     private val app: Application,
     private val scope: CoroutineScope,
+    private val apiProvider: () -> OpencodeClient,
+    private val httpClient: () -> OkHttpClient,
+    private val baseProvider: () -> okhttp3.HttpUrl,
+    private val directoryProvider: () -> String,
 ) {
     private val profileStore = SshProfileStore(app)
     private val keyStore = SshKeyStore(app)
@@ -100,6 +107,76 @@ class SshManager(
         _link.value = null
     }
 
+    /**
+     * Add this device's public key to the server's `authorized_keys`, using the
+     * opencode session the phone already holds.
+     *
+     * This removes the only manual step in SSH setup. It works because a paired
+     * client can already run any command through opencode's PTY API — so writing a
+     * line to `authorized_keys` grants nothing the caller did not already have.
+     *
+     * Requires a reachable opencode server, but only *now*: once the key is in
+     * place, SSH is independent. That is the right direction for the dependency —
+     * the escape hatch must not depend on the thing it exists to escape from.
+     *
+     * Writes are idempotent and the key is scoped with `restrict`, so running this
+     * twice is harmless and a lost phone can be revoked by deleting one line.
+     */
+    suspend fun enrollKeyViaOpencode(): Result<String> {
+        val line = runCatching { keyStore.ensureKey() }
+            .getOrElse { return Result.failure(it) }
+        if (!isLegalKeyLine(line)) {
+            return Result.failure(IllegalStateException("Refusing to write a malformed key line"))
+        }
+
+        val api = apiProvider()
+        val directory = directoryProvider()
+        val script = buildString {
+            append("set -e; umask 077; mkdir -p ~/.ssh; chmod 700 ~/.ssh; touch ~/.ssh/authorized_keys; ")
+            append("chmod 600 ~/.ssh/authorized_keys; ")
+            // Single-quoted so nothing in the key can be interpreted by the shell.
+            append("grep -qxF '").append(line).append("' ~/.ssh/authorized_keys || ")
+            append("printf '%s\\n' '").append(line).append("' >> ~/.ssh/authorized_keys; ")
+            append("grep -c 'opencode-android' ~/.ssh/authorized_keys")
+        }
+
+        return runCatching {
+            val out = PtyCapture.shell(
+                client = httpClient(),
+                base = baseProvider(),
+                api = api,
+                directory = directory,
+                script = script,
+            )
+            if (out.contains("Unauthorized") || out.contains("Authentication required")) {
+                error("opencode rejected the request — pair again in Setup")
+            }
+            val count = out.lineSequence()
+                .map { it.trim() }
+                .lastOrNull { it.all { c -> c.isDigit() } && it.isNotEmpty() }
+                ?.toIntOrNull()
+            if (count == null || count < 1) {
+                error("The server refused the write. Check the SSH user can edit its own authorized_keys.")
+            }
+            line
+        }
+    }
+
+    /**
+     * A key line is `restrict <type> <base64> <comment>` and nothing else.
+     *
+     * Validated even though the key comes from our own keystore: this string is
+     * handed to a shell, and "we generated it" is not the same as "it is safe".
+     */
+    internal fun isLegalKeyLine(line: String): Boolean {
+        val parts = line.trim().split(Regex("\\s+"))
+        if (parts.size != 4) return false
+        if (parts[0] != "restrict") return false
+        if (!Regex("^(ecdsa-sha2-nistp256|ssh-ed25519|ssh-rsa)$").matches(parts[1])) return false
+        if (!Regex("^[A-Za-z0-9+/=]+$").matches(parts[2])) return false
+        return parts[3].isNotBlank() && !parts[3].contains("'")
+    }
+
     fun upsert(profile: SshProfile) {
         scope.launch {
             profileStore.upsert(profile)
@@ -131,7 +208,6 @@ class SshManager(
         }
     }
 
-    private companion object {
-        const val TAG = "SshManager"
-    }
 }
+
+private const val TAG = "SshManager"
