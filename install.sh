@@ -19,6 +19,19 @@
 #
 set -euo pipefail
 
+# --watch keeps a valid code on screen.
+#
+# The server hardcodes the pairing window: POST /api/pair always answers
+# expires_in 300 and there is no config key or request parameter to change it —
+# verified against the published config schema and the OpenAPI spec. So a code
+# cannot be made to last longer than five minutes.
+#
+# What can be removed is the failure mode. Refreshing well inside the window
+# means whatever is on screen when the user looks at it is always live, and a
+# phone camera that takes twenty seconds to come up no longer eats the code.
+WATCH=0
+[ "${1:-}" = "--watch" ] && WATCH=1
+
 UNIT=/etc/systemd/system/opencode-server.service
 ENVFILE=/etc/opencode/server.env
 PORT="${OPENCODE_PORT:-4096}"
@@ -203,23 +216,36 @@ fi
 
 # ---- 7. pairing code -----------------------------------------------------
 
-CODE_JSON="$(curl -fsS -u "opencode:$PASSWORD" -X POST "http://$BIND:$PORT/api/pair" 2>/dev/null || true)"
-CODE="$(printf '%s' "$CODE_JSON" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')"
-[ -n "$CODE" ] || die "could not mint a pairing code"
+show_code() {
+    local code_json code link
+    code_json="$(curl -fsS -u "opencode:$PASSWORD" -X POST "http://$BIND:$PORT/api/pair" 2>/dev/null || true)"
+    code="$(printf '%s' "$code_json" | sed -n 's/.*"code":"\([^"]*\)".*/\1/p')"
+    [ -n "$code" ] || return 1
+    link="http://$BIND:$PORT/auth/connect/$code"
 
-LINK="http://$BIND:$PORT/auth/connect/$CODE"
+    # Clear and redraw in place so a --watch terminal does not fill with scrollback.
+    printf '\033[H\033[2J' || true
+    printf '\033[1;32m  Server ready.\033[0m\n\n'
+    printf '  Address   %s\n' "$BIND:$PORT"
+    printf '  Code      %s\n\n' "$code"
+    if command -v qrencode >/dev/null 2>&1; then
+        qrencode -t ANSIUTF8 -m 2 "$link" | sed 's/^/  /'
+    else
+        printf '      %s\n\n' "$code"
+    fi
+    printf '  Scan it in the app, or type the code. One use, five minutes.\n'
+}
 
-printf '\n'
-printf '\033[1;32m  Server ready.\033[0m\n\n'
-printf '  Address   %s\n' "$BIND:$PORT"
-printf '  Code      %s   (expires in 5 minutes, one use)\n\n' "$CODE"
-
-if command -v qrencode >/dev/null 2>&1; then
-    printf '  Scan from the app, or type the code by hand:\n\n'
-    qrencode -t ANSIUTF8 -m 2 "$LINK" | sed 's/^/  /'
-else
-    printf '  Or type this code in the app:\n\n      %s\n\n' "$CODE"
+if [ "$WATCH" = "1" ]; then
+    say "watch mode — a fresh code every 120s. Ctrl-C to stop."
+    trap 'printf "\n"; exit 0' INT TERM
+    while true; do
+        show_code || warn "could not mint a code; retrying"
+        sleep 120
+    done
 fi
+
+show_code || die "could not mint a pairing code"
 
 cat <<EOF
   Install the app on the phone and enter the code. It will find the rest.

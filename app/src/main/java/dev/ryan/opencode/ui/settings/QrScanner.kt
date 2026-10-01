@@ -160,13 +160,37 @@ private fun decode(proxy: ImageProxy, consumed: AtomicBoolean, found: (String) -
     }
     try {
         val plane = proxy.planes.firstOrNull() ?: return null
+        val width = proxy.width
+        val height = proxy.height
+        if (width <= 0 || height <= 0) return null
+
+        // The camera's row stride is routinely wider than the frame — padding is
+        // added for alignment and is commonly width rounded up to 16. Reading the
+        // plane linearly and handing it to ZXing as if stride == width shears
+        // every row after the first, so the symbol is undecodable. This was the
+        // reason scanning never fired: the code was fine, the pixels were not.
+        val rowStride = plane.rowStride
         val buffer = plane.buffer
-        val bytes = ByteArray(buffer.remaining())
-        buffer.get(bytes)
+        buffer.position(0)
+        val bytes = if (rowStride == width) {
+            ByteArray(buffer.remaining()).also { buffer.get(it) }
+        } else {
+            ByteArray(width * height).also { tight ->
+                val row = ByteArray(rowStride)
+                var copied = 0
+                for (y in 0 until height) {
+                    if (buffer.remaining() < rowStride) break
+                    buffer.get(row, 0, rowStride)
+                    System.arraycopy(row, 0, tight, y * width, width)
+                    copied = y + 1
+                }
+                if (copied < height) return null // truncated frame, skip it
+            }
+        }
 
         val source = PlanarYUVLuminanceSource(
-            bytes, proxy.width, proxy.height,
-            0, 0, proxy.width, proxy.height,
+            bytes, width, height,
+            0, 0, width, height,
             false,
         )
         val result = QRCodeReader().decode(
