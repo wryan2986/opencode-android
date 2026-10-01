@@ -13,6 +13,8 @@ coroutines = "1.9.0"
 security = "1.1.0-alpha06"
 sshj = "0.38.0"
 slf4j = "1.7.36"
+camera = "1.4.1"
+zxing = "3.5.3"
 junit = "4.13.2"
 androidxTestJunit = "1.2.1"
 espresso = "3.6.1"
@@ -41,6 +43,11 @@ sshj = { group = "com.hierynomus", name = "sshj", version.ref = "sshj" }
 slf4j-android = { group = "org.slf4j", name = "slf4j-android", version.ref = "slf4j" }
 bouncycastle-bcprov = { group = "org.bouncycastle", name = "bcprov-jdk18on", version = "1.78.1" }
 bouncycastle-bcpkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version = "1.78.1" }
+camera-core = { group = "androidx.camera", name = "camera-core", version.ref = "camera" }
+camera-camera2 = { group = "androidx.camera", name = "camera-camera2", version.ref = "camera" }
+camera-lifecycle = { group = "androidx.camera", name = "camera-lifecycle", version.ref = "camera" }
+camera-view = { group = "androidx.camera", name = "camera-view", version.ref = "camera" }
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-test-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestJunit" }
 androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espresso" }

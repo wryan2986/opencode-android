@@ -122,6 +122,15 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
+    // In-app QR scanning. CameraX supplies frames, ZXing decodes them. The deep
+    // link already works, but that needs a second app or a browser to hand the URL
+    // over, and asking someone to switch apps mid-setup is friction we can drop.
+    implementation(libs.camera.core)
+    implementation(libs.camera.camera2)
+    implementation(libs.camera.lifecycle)
+    implementation(libs.camera.view)
+    implementation(libs.zxing.core)
+
     // SSH transport. sshj pulls BouncyCastle for its key exchange and host key
     // checks; slf4j-android is the logging facade it binds to (sshj logs through
     // SLF4J and would otherwise be silent). BouncyCastle is pinned explicitly

@@ -73,7 +73,10 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
     var basicUser by remember { mutableStateOf(settings.basicUser) }
     var basicPassword by remember { mutableStateOf("") }
     var pairingCode by remember { mutableStateOf("") }
+    var showScanner by remember { mutableStateOf(false) }
+    var linkHost by remember { mutableStateOf("") }
     var busy by remember { mutableStateOf(false) }
+
     var status by remember { mutableStateOf<String?>(null) }
     var error by remember { mutableStateOf<String?>(null) }
     var showAdvanced by remember { mutableStateOf(false) }
@@ -111,6 +114,25 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
         }
     }
 
+    if (showScanner) {
+        QrScannerDialog(
+            onCode = { scanned ->
+                showScanner = false
+                val parsed = parsePairingLink(scanned)
+                if (parsed != null) {
+                    linkHost = parsed.first
+                    pairingCode = parsed.second
+                    vm.pairUsingCode(parsed.first, parsed.second)
+                } else {
+                    // Not a pairing link — accept a bare code too, since that is
+                    // what the installer also prints as text.
+                    pairingCode = scanned.trim()
+                    if (host.isNotBlank()) pairWithCode(scanned.trim())
+                }
+            },
+            onDismiss = { showScanner = false },
+        )
+    }
     Column(
         Modifier
             .fillMaxSize()
@@ -193,7 +215,12 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        // Scanning is the fast path; typing stays because a code is only valid for
+        // five minutes and one use, so the QR may well be stale by the time the
+        // camera is up. Both feed the same field.
         Row(verticalAlignment = Alignment.CenterVertically) {
+            OutlinedButton(onClick = { showScanner = true }) { Text("Scan QR") }
+            Spacer(Modifier.width(8.dp))
             OutlinedTextField(
                 value = pairingCode,
                 // NB: the code is case-sensitive and the server generates mixed case,
@@ -322,4 +349,35 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
             ) { Text("Sign out") }
         }
     }
+}
+
+/**
+ * Split `http://host:port/auth/connect/CODE` into `(host:port, code)`.
+ *
+ * Returns null for anything that is not that shape, so the caller can fall back
+ * to treating the text as a bare code. The host is never trusted — pairing still
+ * fails unless that host minted the code.
+ */
+internal fun parsePairingLink(text: String): Pair<String, String>? {
+    val trimmed = text.trim()
+    if (!trimmed.startsWith("http://") && !trimmed.startsWith("https://")) return null
+    val scheme = trimmed.substringBefore("://")
+    val withoutScheme = trimmed.substringAfter("://")
+    val slash = withoutScheme.indexOf('/')
+    if (slash < 0) return null
+    val host = withoutScheme.substring(0, slash)
+    val path = withoutScheme.substring(slash)
+    if (!path.startsWith("/auth/connect/")) return null
+    val code = path.removePrefix("/auth/connect/").trim()
+    if (code.isEmpty() || host.isEmpty()) return null
+    // Carry the scheme's default port when the link omits one. The installer
+    // always prints an explicit port, so this only matters for a hand-made link —
+    // and getting it wrong here points pairing at the wrong port and fails with a
+    // bare auth error.
+    val withPort = when {
+        host.contains(':') -> host
+        scheme == "https" -> "$host:443"
+        else -> "$host:80"
+    }
+    return withPort to code
 }
