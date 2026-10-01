@@ -232,6 +232,37 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
      * Write this device's key into the server's `authorized_keys` over the opencode
      * session, so SSH needs no manual step at all.
      */
+    /**
+     * Pair using only a host and a one-time code.
+     *
+     * No password is involved: the code itself is the credential, and
+     * `GET /auth/connect/{code}` mints a session token on its own. Verified against
+     * the server with no Authorization header at all. That means the server
+     * password never has to be read, typed, or stored on the phone.
+     *
+     * The host comes from the pairing link and is not trusted — it still has to
+     * redeem a code that only the real server could have minted.
+     */
+    private val _pairingError = MutableStateFlow<String?>(null)
+    val pairingError: StateFlow<String?> = _pairingError.asStateFlow()
+
+    fun pairUsingCode(host: String, code: String) {
+        _pairingError.value = null
+        viewModelScope.launch {
+            runCatching {
+                connection.applyForPairing(
+                    host = host,
+                    basicUser = "",
+                    basicPassword = "",
+                    code = code,
+                )
+            }.onFailure {
+                _pairingError.value = it.message ?: "That code did not work."
+                android.util.Log.w("AppViewModel", "pairing via link failed: ${it.message}")
+            }
+        }
+    }
+
     fun enrollSshKey() {
         if (_sshEnrolling.value) return
         viewModelScope.launch {

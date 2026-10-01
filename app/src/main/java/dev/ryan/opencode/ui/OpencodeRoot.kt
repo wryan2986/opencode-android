@@ -56,7 +56,11 @@ private enum class Tab(val label: String, val icon: ImageVector) {
 }
 
 @Composable
-fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
+fun OpencodeRoot(
+    onPermissionsResolved: () -> Unit = {},
+    pairingLink: dev.ryan.opencode.PairingLink? = null,
+    onPairingLinkConsumed: () -> Unit = {},
+) {
     val vm: AppViewModel = viewModel(factory = AppViewModel.Factory)
     val settings by vm.settings.collectAsState()
 
@@ -77,6 +81,14 @@ fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
         LaunchedEffect(Unit) { if (settings.configured) vm.autoConnect() }
 
         var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
+
+        // A pairing link from the QR settles both questions at once: it carries the
+        // host *and* the code, so there is nothing to type and nowhere to guess.
+        LaunchedEffect(pairingLink) {
+            val link = pairingLink ?: return@LaunchedEffect
+            vm.pairUsingCode(link.host, link.code)
+            onPairingLinkConsumed()
+        }
         var showFirstRun by remember { mutableStateOf(!hasAnyTransport) }
         if (showFirstRun && !hasAnyTransport) {
             FirstRunDialog(

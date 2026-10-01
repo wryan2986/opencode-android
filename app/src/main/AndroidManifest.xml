@@ -37,6 +37,25 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!--
+                The installer prints a QR holding http://HOST:PORT/auth/connect/CODE.
+                Matching that path lets the phone's own camera open the app and pair
+                straight away, which avoids adding a camera permission and an
+                on-device QR decoder purely to read a short string the server has
+                already minted.
+
+                Deliberately not autoVerify: the link carries a host chosen by whoever
+                printed it, and verification would imply we trust that host's TLS.
+                The host is only a candidate — pairing still fails unless the code
+                was minted by the server actually behind it.
+            -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="http" android:pathPrefix="/auth/connect/" />
+            </intent-filter>
         </activity>
 
         <service
