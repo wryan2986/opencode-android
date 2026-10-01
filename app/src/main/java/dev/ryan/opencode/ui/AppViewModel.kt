@@ -7,7 +7,12 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.ryan.opencode.core.ChatRepository
 import dev.ryan.opencode.core.ConnectionManager
+import dev.ryan.opencode.core.TerminalLink
+import dev.ryan.opencode.core.ssh.TerminalRoute
 import dev.ryan.opencode.core.TmuxSession
+import dev.ryan.opencode.core.ssh.SshManager
+import dev.ryan.opencode.core.ssh.SshProfile
+import kotlinx.coroutines.flow.map
 import dev.ryan.opencode.core.model.ConnectionState
 import dev.ryan.opencode.core.model.DisconnectReason
 import dev.ryan.opencode.core.net.PtySignal
@@ -108,6 +113,7 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
                     connection.api.updatePty(it.id, dir, cols, rows)
                     ptySize = cols to rows
                     connection.pty.attach(it.id)
+                    if (!usingSsh.value) _activeLink.value = connection.pty
                 }
                 .onFailure {
                     android.util.Log.w("AppViewModel", "pty create failed: ${it.message}")
@@ -176,6 +182,62 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Re-run discovery on demand, e.g. after the phone changed network. */
     fun rediscover() = autoConnect()
+
+    // ---- ssh ----
+
+    val ssh = SshManager(getApplication(), viewModelScope)
+    val sshProfiles = ssh.profiles
+    val sshBusy = ssh.busy
+    val sshError = ssh.error
+
+    /** Which transport the terminal is currently showing. */
+    private val _terminalRoute = MutableStateFlow<TerminalRoute>(TerminalRoute.Opencode(settings.value.host))
+    val terminalRoute: StateFlow<TerminalRoute> = _terminalRoute.asStateFlow()
+
+    /** True when the terminal is on the SSH route, which has no PTY id. */
+    val usingSsh: StateFlow<Boolean> = _terminalRoute
+        .map { it is TerminalRoute.Ssh }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, false)
+
+    /**
+     * The byte pipe the terminal should render.
+     *
+     * The UI reads one of these rather than branching on transport, so the
+     * emulator, key handling and resize all stay transport-agnostic.
+     */
+    private val _activeLink = MutableStateFlow<TerminalLink?>(null)
+    val activeLink: StateFlow<TerminalLink?> = _activeLink.asStateFlow()
+
+    /** Generate this device's key and return the line to paste into authorized_keys. */
+    fun ensureSshKey(): String = ssh.ensureKey()
+
+    fun sshFingerprint(): String = ssh.fingerprint()
+
+    fun deleteSshKey() = ssh.deleteKey()
+
+    /** Switch the terminal onto an SSH profile. */
+    fun useSsh(profile: SshProfile, cols: Int = 100, rows: Int = 30) {
+        viewModelScope.launch {
+            closeTerminal()
+            _terminalRoute.value = TerminalRoute.Ssh(profile)
+            ssh.connect(profile, cols, rows)
+            _activeLink.value = ssh.link.value
+        }
+    }
+
+    /** Switch back to the opencode transport. */
+    fun useOpencode(cols: Int = 100, rows: Int = 30) {
+        viewModelScope.launch {
+            ssh.disconnect()
+            _activeLink.value = null
+            _terminalRoute.value = TerminalRoute.Opencode(settings.value.host)
+            ensureTerminal(cols, rows)
+            _activeLink.value = connection.pty
+        }
+    }
+
+    fun saveSshProfile(profile: SshProfile) = ssh.upsert(profile)
+    fun deleteSshProfile(id: String) = ssh.delete(id)
 
     // ---- tmux ----
 

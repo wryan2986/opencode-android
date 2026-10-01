@@ -66,6 +66,7 @@ import dev.ryan.opencode.terminal.DEFAULT_FG
 import dev.ryan.opencode.terminal.TerminalEmulator
 import dev.ryan.opencode.terminal.WideState
 import dev.ryan.opencode.ui.LocalAppViewModel
+import dev.ryan.opencode.core.TerminalSignal
 
 private val TermBg = Color(0xFF0B0B0F)
 private val TermFg = Color(0xFFD4D4D8)
@@ -118,8 +119,12 @@ private fun packed(rgb: Int): Color = Color(rgb or OPAQUE_ALPHA)
 @Composable
 fun TerminalScreen() {
     val vm = LocalAppViewModel.current
-    val pty = vm.connection.pty
-    val connected by pty.connected.collectAsState()
+    // Whichever transport is live. Null until the first link resolves, which is
+    // why every use below is guarded rather than assumed.
+    val pty by vm.activeLink.collectAsState()
+    // Read directly rather than collecting: every output event bumps `frame`, which
+    // recomposes this composable, so the value is re-read at the moment it matters.
+    val connected = pty?.connected?.value ?: false
     val settings by vm.settings.collectAsState()
 
     val tmuxSessions by vm.tmuxSessions.collectAsState()
@@ -129,11 +134,24 @@ fun TerminalScreen() {
     val emulator = remember { TerminalEmulator(cols = 100, rows = 30) }
     var lastSize by remember { mutableStateOf(0 to 0) }
     var showTmuxSheet by remember { mutableStateOf(false) }
+    var showRouteSheet by remember { mutableStateOf(false) }
+
+    val usingSsh by vm.usingSsh.collectAsState()
+    val terminalRoute by vm.terminalRoute.collectAsState()
+    val sshProfiles by vm.sshProfiles.collectAsState()
+    val sshBusy by vm.sshBusy.collectAsState()
+    val sshError by vm.sshError.collectAsState()
+    // Generated once per composition of the sheet so the key exists by the time
+    // it is displayed; creating it here means "add a host" is the only tap needed.
+    val keyFp = remember { if (showRouteSheet) vm.sshFingerprint() else "" }
+    val publicKey = remember(showRouteSheet) {
+        if (showRouteSheet) vm.ensureSshKey() else ""
+    }
 
     // The list is a live query against the box, so refresh on open and whenever
     // the sheet is showing — sessions come and go from your other terminals too.
-    LaunchedEffect(showTmuxSheet) {
-        if (showTmuxSheet) {
+    LaunchedEffect(showTmuxSheet, usingSsh) {
+        if (showTmuxSheet && !usingSsh) {
             while (true) {
                 vm.refreshTmux()
                 kotlinx.coroutines.delay(4000)
@@ -151,7 +169,7 @@ fun TerminalScreen() {
     // The terminal must take hardware/soft key events and forward them to the PTY.
     // Without this the on-screen keyboard appears but nothing is typed: the screen
     // has no focusable input target at all.
-    val keyHandler = remember { TerminalKeyHandler(pty) }
+    val keyHandler = remember(pty) { pty?.let { TerminalKeyHandler(it) } }
     LaunchedEffect(Unit) {
         // Grab focus as soon as the tab opens so typing works immediately.
         runCatching { focusRequester.requestFocus() }
@@ -161,16 +179,17 @@ fun TerminalScreen() {
     val density = LocalDensity.current
     val emPx = with(density) { fontSize.toPx() }
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(pty) {
+        val link = pty ?: return@LaunchedEffect
         // Backfill anything the shell emitted before we started listening. The
         // signal flow has no replay, so without this the opening prompt is lost
         // and — because bash then waits for input — the screen never recovers.
-        pty.outputSince(0).forEach { emulator.write(it) }
-        pty.signals.collect { signal ->
-            if (signal is PtySignal.Output) {
+        link.outputSince(0).forEach { emulator.write(it) }
+        link.signals.collect { signal ->
+            if (signal is TerminalSignal.Output) {
                 emulator.write(signal.bytes)
                 // The shell may be asking us something (cursor report, attributes) — answer it.
-                emulator.takePendingOutput().takeIf { it.isNotEmpty() }?.let(pty::reply)
+                emulator.takePendingOutput().takeIf { it.isNotEmpty() }?.let(link::reply)
             }
             frame++
         }
@@ -197,7 +216,7 @@ fun TerminalScreen() {
                 // that is new, then clear so the next commit starts clean.
                 val shared = imeBuffer.length.coerceAtMost(next.text.length)
                 if (next.text.length > shared) {
-                    pty.write(next.text.substring(shared))
+                    pty?.write(next.text.substring(shared))
                 }
                 imeBuffer = next.text
             },
@@ -222,14 +241,26 @@ fun TerminalScreen() {
                 color = Color(0xFF9CA3AF),
             )
             Spacer(Modifier.weight(1f))
+            TextButton(onClick = { showRouteSheet = true }) {
+                Text(
+                    when (val r = terminalRoute) {
+                        is dev.ryan.opencode.core.ssh.TerminalRoute.Opencode -> "opencode"
+                        is dev.ryan.opencode.core.ssh.TerminalRoute.Ssh -> "ssh · ${r.profile.label}"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                )
+            }
+            Spacer(Modifier.width(6.dp))
             tmuxAttached?.let { name ->
                 TmuxBadge(name) { vm.detachTmux(lastSize.first, lastSize.second) }
                 Spacer(Modifier.width(8.dp))
             }
-            TextButton(onClick = { showTmuxSheet = true }) { Text("tmux") }
-            Spacer(Modifier.width(8.dp))
+            if (!usingSsh) {
+                TextButton(onClick = { showTmuxSheet = true }) { Text("tmux") }
+                Spacer(Modifier.width(8.dp))
+            }
             Text(
-                "offset ${pty.consumedOffset()}",
+                "offset ${(pty?.consumedOffset() ?: 0L)}",
                 style = MaterialTheme.typography.labelSmall,
                 color = Color(0xFF6B7280),
             )
@@ -241,7 +272,7 @@ fun TerminalScreen() {
                 .fillMaxSize()
                 .padding(horizontal = 4.dp)
                 .focusRequester(focusRequester)
-                .onKeyEvent { keyHandler.onKey(it) }
+                .onKeyEvent { keyHandler?.onKey(it) ?: false }
                 .onSizeChanged { size ->
             // Size the grid to the real viewport, and create the PTY at that size
             // rather than resizing afterwards: the emulator deliberately has no
@@ -286,9 +317,43 @@ fun TerminalScreen() {
             }
         }
 
-        ExtraKeysRow(onKey = { pty.write(it) })
+        ExtraKeysRow(onKey = { pty?.write(it) })
 
-        if (showTmuxSheet) {
+        if (showRouteSheet) {
+            RouteSheet(
+                profiles = sshProfiles,
+                busy = sshBusy,
+                error = sshError,
+                hostLabel = settings.host,
+                currentIsSsh = usingSsh,
+                keyFingerprint = keyFp,
+                publicKey = publicKey,
+                onUseOpencode = {
+                    vm.useOpencode(lastSize.first, lastSize.second)
+                    showRouteSheet = false
+                },
+                onUseSsh = { profile ->
+                    vm.useSsh(profile, lastSize.first, lastSize.second)
+                    showRouteSheet = false
+                },
+                onCreateProfile = { host, user, command, port ->
+                    vm.saveSshProfile(
+                        dev.ryan.opencode.core.ssh.SshProfile(
+                            id = dev.ryan.opencode.core.ssh.SshProfileStore.newId(),
+                            label = host.substringBefore(':').ifBlank { "ssh" },
+                            host = host,
+                            port = port,
+                            user = user,
+                            launchCommand = command,
+                        ),
+                    )
+                },
+                onDeleteProfile = { vm.deleteSshProfile(it) },
+                onDismiss = { showRouteSheet = false },
+            )
+        }
+
+        if (showTmuxSheet && !usingSsh) {
             TmuxSheet(
                 sessions = tmuxSessions,
                 busy = tmuxBusy,

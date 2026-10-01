@@ -5,7 +5,7 @@ import androidx.compose.ui.input.key.KeyEvent
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
-import dev.ryan.opencode.core.net.PtySocket
+import dev.ryan.opencode.core.TerminalLink
 
 /**
  * Translates Android key events into the byte sequences a shell expects.
@@ -14,7 +14,7 @@ import dev.ryan.opencode.core.net.PtySocket
  * opens and nothing reaches the shell. Kept separate from the emulator, which is
  * pure Kotlin and unit-tested, because this is entirely about Android's key model.
  */
-class TerminalKeyHandler(private val pty: PtySocket) {
+class TerminalKeyHandler(private val pty: dev.ryan.opencode.core.TerminalLink) {
 
     /** Feed a key-down event to the PTY. Returns true if it was consumed. */
     fun onKey(event: KeyEvent): Boolean {

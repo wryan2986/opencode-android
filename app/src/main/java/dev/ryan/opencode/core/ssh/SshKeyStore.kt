@@ -92,7 +92,7 @@ class SshKeyStore(context: Context) {
             ?: error("no key material for $ALIAS")
         val encoded = sshWireFormat(key)
         val b64 = base64(encoded)
-        return "ecdsa-sha2-nistp256 $b64 opencode-android"
+        return "${HostKeyStore.typeName(key)} $b64 opencode-android"
     }
 
     /** Fingerprint so the user can verify the key on the server before trusting it. */
@@ -107,7 +107,6 @@ class SshKeyStore(context: Context) {
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ALIAS = "opencode_ssh_ec"
 
-        /** RFC 5656 ECDSA public key blob: `ecdsa-sha2-nistp256` + the point. */
         /** secp256r1 parameters, materialised so a plain ECPrivateKeySpec can be built. */
         private fun ecParams(): java.security.spec.ECParameterSpec {
             val ap = java.security.AlgorithmParameters.getInstance("EC")
@@ -115,34 +114,27 @@ class SshKeyStore(context: Context) {
             return ap.getParameterSpec(java.security.spec.ECParameterSpec::class.java)
         }
 
-        /** Fixed-width big-endian, which is what SSH wire format requires. */
-        private fun fixed(value: java.math.BigInteger, len: Int): ByteArray {
-            val raw = value.toByteArray()
-            val out = ByteArray(len)
-            val take = minOf(raw.size, len)
-            // Strip a leading zero sign byte if BigInteger added one.
-            val src = if (raw.size > len && raw[0] == 0.toByte()) raw.copyOfRange(1, raw.size) else raw
-            System.arraycopy(src, src.size - take, out, len - take, take)
-            return out
-        }
-
-        private fun sshWireFormat(publicKey: java.security.interfaces.ECPublicKey): ByteArray {
-            val fieldSize = 32
-            val point = fixed(publicKey.w.affineX, fieldSize) + fixed(publicKey.w.affineY, fieldSize)
-            val type = "ecdsa-sha2-nistp256".toByteArray()
-            val blob = sshString(type) + sshString(point)
-            return sshString(blob)
-        }
-
-        private fun sshString(bytes: ByteArray): ByteArray {
-            val len = bytes.size
-            val header = ByteArray(4)
-            header[0] = ((len ushr 24) and 0xFF).toByte()
-            header[1] = ((len ushr 16) and 0xFF).toByte()
-            header[2] = ((len ushr 8) and 0xFF).toByte()
-            header[3] = (len and 0xFF).toByte()
-            return header + bytes
-        }
+        /**
+         * The SSH wire blob for this key, in the exact form `authorized_keys` and
+         * `known_hosts` expect.
+         *
+         * RFC 5656 lays an EC public key out as three SSH strings:
+         *
+         *     string  "ecdsa-sha2-nistp256"
+         *     string  "nistp256"
+         *     string  Q
+         *
+         * where `Q` is the *uncompressed* point — a `0x04` prefix followed by the
+         * two 32-byte coordinates. An earlier version of this file hand-rolled the
+         * format and omitted both the curve-name string and the `0x04`. The
+         * resulting line looks plausible and sshd rejects it outright, so every
+         * pairing would have failed with a bare auth error.
+         *
+         * Delegating to [HostKeyStore.wireBlob] keeps one implementation, and the
+         * test suite pins that output against sshj's own encoder byte for byte.
+         */
+        private fun sshWireFormat(publicKey: java.security.interfaces.ECPublicKey): ByteArray =
+            HostKeyStore.wireBlob(publicKey)
 
         fun base64(data: ByteArray): String =
             android.util.Base64.encodeToString(data, android.util.Base64.NO_WRAP)

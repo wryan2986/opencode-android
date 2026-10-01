@@ -16,11 +16,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import dev.ryan.opencode.core.TerminalSignal
+import dev.ryan.opencode.core.model.DisconnectReason
 import net.schmizz.sshj.SSHClient
 import net.schmizz.sshj.common.SSHException
 import net.schmizz.sshj.connection.channel.direct.PTYMode
 import net.schmizz.sshj.connection.channel.direct.Session
 import java.io.Closeable
+import java.security.Security
 
 /**
  * A real shell on a remote host, over SSH, independent of opencode.
@@ -43,25 +46,72 @@ import java.io.Closeable
 class SshTerminal(
     private val profile: SshProfile,
     private val keyStore: SshKeyStore,
-) : Closeable {
+) : Closeable, dev.ryan.opencode.core.TerminalLink {
 
     private val scopeJob = SupervisorJob()
     private val scope = CoroutineScope(scopeJob + Dispatchers.IO)
 
     private val _connected = MutableStateFlow(false)
-    val connected: StateFlow<Boolean> = _connected.asStateFlow()
+    override val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
-    private val _output = MutableSharedFlow<ByteArray>(
+    /**
+     * Bounded history of output, so a UI that subscribes late still sees the
+     * opening prompt.
+     *
+     * The output flow has `replay = 0`, which is correct for control messages and
+     * wrong for terminal bytes: the shell prompt arrives before the UI is
+     * listening, and since bash then blocks on input, nothing else ever arrives to
+     * trigger a redraw. The screen stays blank while the offset counter climbs.
+     *
+     * Unlike the opencode PTY there is no server-side cursor to resume from — SSH
+     * cannot replay a session it no longer holds — so this is a recovery buffer
+     * for reconnects of *this* object, not a resume mechanism. A real reconnect
+     * gets a fresh screen.
+     */
+    private val history = ArrayDeque<Pair<Long, ByteArray>>()
+    private val historyLock = Any()
+    private var historyBytes = 0
+    private var historyLimit = 256 * 1024
+    private val consumed = java.util.concurrent.atomic.AtomicLong(0)
+
+    override fun outputSince(offset: Long): List<ByteArray> = synchronized(historyLock) {
+        history.filter { it.first + it.second.size > offset }.map { it.second }
+    }
+
+    override fun consumedOffset(): Long = consumed.get()
+
+    private fun recordHistory(start: Long, bytes: ByteArray) {
+        synchronized(historyLock) {
+            history.addLast(start to bytes)
+            historyBytes += bytes.size
+            while (historyBytes > historyLimit && history.size > 1) {
+                historyBytes -= history.removeFirst().second.size
+            }
+        }
+    }
+
+    private fun note(bytes: ByteArray) {
+        val start = consumed.getAndAdd(bytes.size.toLong())
+        recordHistory(start, bytes)
+    }
+
+    private val _signals = MutableSharedFlow<TerminalSignal>(
         replay = 0,
         // A full-screen redraw can outrun a slow render. Dropping the oldest chunk
         // keeps typing responsive; the emulator recovers on the next full write.
         extraBufferCapacity = 512,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
-    val output: SharedFlow<ByteArray> = _output.asSharedFlow()
+    override val signals: SharedFlow<TerminalSignal> = _signals.asSharedFlow()
 
     private val _status = MutableStateFlow<SshStatus>(SshStatus.Idle)
     val status: StateFlow<SshStatus> = _status.asStateFlow()
+
+    /** Report a dropped connection the way the terminal supervisor expects. */
+    private fun reportDrop(reason: dev.ryan.opencode.core.model.DisconnectReason) {
+        _connected.value = false
+        _signals.tryEmit(TerminalSignal.Dropped(reason))
+    }
 
     @Volatile private var client: SSHClient? = null
     @Volatile private var session: Session? = null
@@ -72,8 +122,34 @@ class SshTerminal(
     @Volatile var updatedKnownHosts: Map<String, String> = profile.knownHosts
         private set
 
+    /**
+     * Make BouncyCastle available to sshj, exactly once per process.
+     *
+     * sshj resolves `"ECDSA"` through the BC provider explicitly and throws
+     * `NoSuchAlgorithmException: ECDSA KeyFactory not available` without it — the
+     * first touch of `KeyType` fails, so this has to happen before anything else in
+     * the SSH path, not lazily inside a try block.
+     *
+     * Verified against real sshd: with the provider absent, key exchange succeeds
+     * and authentication then fails with `Exhausted available authentication
+     * methods`, which reads like a credential problem rather than a missing JCE
+     * provider. Registering BC last keeps the platform's own implementations in
+     * front, so this only supplies what the system does not.
+     */
+    private fun ensureCryptoProvider() {
+        if (Security.getProvider("BC") != null) return
+        runCatching {
+            Security.addProvider(
+                org.bouncycastle.jce.provider.BouncyCastleProvider(),
+            )
+        }.onFailure {
+            android.util.Log.e(TAG, "BouncyCastle unavailable; SSH will not authenticate", it)
+        }
+    }
+
     suspend fun connect(cols: Int, rows: Int) {
         disconnect()
+        ensureCryptoProvider()
         _status.value = SshStatus.Connecting
 
         val pair = keyStore.keyPair()
@@ -110,6 +186,8 @@ class SshTerminal(
         client = ssh
         updatedKnownHosts = hostKey.updatedKnown
 
+        lastCols = cols
+        lastRows = rows
         val s = ssh.startSession()
         session = s
         val modes = mapOf(
@@ -134,6 +212,7 @@ class SshTerminal(
         val inStream = cmd.inputStream
         _connected.value = true
         _status.value = SshStatus.Connected
+        _signals.tryEmit(TerminalSignal.Opened)
 
         pump = scope.launch {
             val buf = ByteArray(READ_CHUNK)
@@ -142,10 +221,18 @@ class SshTerminal(
                     val n = inStream.read(buf)
                     if (n < 0) break
                     if (n == 0) continue
-                    _output.emit(buf.copyOf(n))
+                    val chunk = buf.copyOf(n)
+                    note(chunk)
+                    _signals.emit(TerminalSignal.Output(chunk))
                 }
             } catch (e: Exception) {
-                if (isActive) Log.w(TAG, "ssh read ended: ${e.message}")
+                if (isActive) {
+                    Log.w(TAG, "ssh read ended: ${e.message}")
+                    reportDrop(
+                        if (e is java.io.IOException) DisconnectReason.NetworkLost
+                        else DisconnectReason.Unknown,
+                    )
+                }
             } finally {
                 _connected.value = false
                 if (_status.value != SshStatus.HostKeyChanged) _status.value = SshStatus.Closed
@@ -153,30 +240,93 @@ class SshTerminal(
         }
     }
 
+    override fun write(data: String) {
+        scope.launch { send(data.toByteArray(Charsets.UTF_8)) }
+    }
+
+    override fun writeBytes(data: ByteArray) {
+        scope.launch { send(data) }
+    }
+
+    override fun reply(bytes: ByteArray) {
+        scope.launch { send(bytes) }
+    }
+
     /** Send keystrokes to the remote PTY. */
-    suspend fun write(bytes: ByteArray) {
+    private suspend fun send(bytes: ByteArray) {
         val out = session?.outputStream ?: return
         withContext(Dispatchers.IO) {
             synchronized(writeLock) { out.write(bytes); out.flush() }
         }
     }
 
-    fun write(text: String) {
-        scope.launch { write(text.toByteArray(Charsets.UTF_8)) }
+    /** Tell the server the window changed, so tmux and curses resize properly. */
+    override fun resize(cols: Int, rows: Int) {
+        scope.launch {
+            lastCols = cols
+            lastRows = rows
+            runCatching { resizeRemote(cols, rows) }
+        }
     }
 
-    /** Tell the server the window changed, so tmux and curses resize properly. */
-    suspend fun resize(cols: Int, rows: Int) {
+    /**
+     * Send a window-size change.
+     *
+     * This must be `changeWindowDimensions`, **not** a second `allocatePTY`. A PTY
+     * can only be allocated once per channel, and calling it again makes sshd tear
+     * the connection down with `Protocol error: you already have a pty` — verified
+     * against real sshd. Since `resize` fires on every rotation, getting this wrong
+     * would kill the session the first time the phone turned.
+     *
+     * Going through the API also means tmux and curses get a real SIGWINCH rather
+     * than silently rendering at the size they started with.
+     */
+    private suspend fun resizeRemote(cols: Int, rows: Int) {
         val s = session ?: return
         runCatching {
             withContext(Dispatchers.IO) {
-                s.allocatePTY(
-                    profile.termType, cols, rows, 0, 0,
-                    mapOf(PTYMode.TTY_OP_ISPEED to 115200, PTYMode.TTY_OP_OSPEED to 115200),
-                )
+                (s as? net.schmizz.sshj.connection.channel.direct.SessionChannel)
+                    ?.changeWindowDimensions(cols, rows, 0, 0)
             }
+        }.onFailure {
+            // A closed session here is expected on teardown; anything else is worth
+            // seeing because it means resizes are not reaching the terminal.
+            Log.w(TAG, "resize to ${cols}x$rows failed: ${it.message}")
         }
     }
+
+    /**
+     * Close the SSH session.
+     *
+     * This kills the remote shell and any process inside it — including a tmux
+     * client, which will detach but leave its tmux session running on the server.
+     * That is the behaviour you want: detach, not destroy.
+     */
+    override fun detach() {
+        scope.launch {
+            disconnect()
+            _status.value = SshStatus.Idle
+        }
+    }
+
+    /**
+     * Come back after a drop.
+     *
+     * A new session is opened rather than resumed, because SSH has no equivalent of
+     * the opencode PTY's byte cursor. Anything the previous session was doing at a
+     * raw terminal level is gone; if it was inside tmux, the tmux session survives
+     * on the server and reattaching picks it up.
+     */
+    override fun reattach() {
+        scope.launch {
+            _signals.tryEmit(TerminalSignal.Attaching)
+            runCatching { connect(lastCols, lastRows) }
+                .onFailure { reportDrop(DisconnectReason.Unknown) }
+        }
+    }
+
+    private var lastCols = 80
+    private var lastRows = 24
 
     suspend fun disconnect() {
         pump?.cancelAndJoin()

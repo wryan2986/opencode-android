@@ -116,6 +116,7 @@ Jetpack Compose (BOM 2024.12.01), OkHttp, kotlinx.serialization.
   flag-injection attempts) and `list-sessions` row parsing.
 - **10** discovery tests — candidate ordering, de-duplication, and port defaulting
   (notably that an `https` tunnel is never given opencode's 4096).
+- **8** SSH tests — `authorized_keys` wire-format structure and host-key pinning.
 
 `docs/PROTOCOL.md` documents the verified wire protocol, including several things
 the published opencode docs get wrong.
@@ -210,6 +211,39 @@ tailnet, resolves only within the tailnet, and survives the IP changing — whic
 the case that actually needed solving.
 
 When several candidates accept the token, the app asks rather than guessing.
+
+## SSH terminal
+
+The terminal can run over SSH instead of opencode, which matters because the
+opencode route depends on the opencode server being up. SSH does not.
+
+Tap the transport name in the terminal header, add a host, and copy the shown
+public key into `~/.ssh/authorized_keys` on the server. From then on:
+
+- **opencode** — PTY from `POST /api/pty`. Available only while opencode is.
+- **ssh** — an independent session. Works when opencode is wedged, and works on
+  hosts that do not run opencode at all.
+
+A profile's "run on connect" is what the session starts, so `opencode`, `codex`,
+`tmux attach -t work` or a plain shell are all just a value in a field.
+
+Three bugs here were found by testing against real sshd rather than by compiling,
+and all three would have shipped otherwise:
+
+1. **The `authorized_keys` line was malformed.** An EC key blob is three SSH
+   strings — type name, curve name (`nistp256`), and the uncompressed point
+   (`0x04 || X || Y`). The first version omitted the curve string and the `0x04`;
+   the second wrote the type name by hand, which `putPubKeyIntoBuffer` already does,
+   so it appeared twice. Both produce a line that looks fine and that sshd rejects
+   with a bare auth error. The encoder is now sshj's alone, and tests assert the
+   field layout.
+2. **BouncyCastle has to be registered as a JCE provider.** sshj resolves `"ECDSA"`
+   through it explicitly; without it the first `KeyType` use throws
+   `NoSuchAlgorithmException`. On Android that is a crash, not an auth failure.
+3. **Resize must use `changeWindowDimensions`, never a second `allocatePTY`.** A
+   PTY is allocated once per channel; a second call makes sshd drop the connection
+   with `Protocol error: you already have a pty`. Since resize fires on rotation,
+   this would have killed the session the first time the phone turned.
 
 ## Known gaps
 

@@ -93,28 +93,16 @@ class HostKeyStore(
          */
         fun wireBlob(key: PublicKey): ByteArray {
             val type = KeyType.fromKey(key)
-            val body = Buffer.PlainBuffer()
-            type.putPubKeyIntoBuffer(key, body)
-            val name = type.toString().toByteArray()
-            val out = java.io.ByteArrayOutputStream()
-            out.write(sshString(name))
-            out.write(body.getCompactData())
-            return out.toByteArray()
+            val buffer = Buffer.PlainBuffer()
+            type.putPubKeyIntoBuffer(key, buffer)
+            // No manual type prefix: putPubKeyIntoBuffer already writes it.
+            return buffer.getCompactData()
         }
 
         /** One `authorized_keys` line, for pasting onto a server. */
         fun encode(key: PublicKey): String? = runCatching {
             "${typeName(key)} ${b64(wireBlob(key))}"
         }.getOrNull()
-
-        private fun sshString(bytes: ByteArray): ByteArray {
-            val header = ByteArray(4)
-            header[0] = ((bytes.size ushr 24) and 0xFF).toByte()
-            header[1] = ((bytes.size ushr 16) and 0xFF).toByte()
-            header[2] = ((bytes.size ushr 8) and 0xFF).toByte()
-            header[3] = (bytes.size and 0xFF).toByte()
-            return header + bytes
-        }
 
         fun b64(data: ByteArray): String = java.util.Base64.getEncoder().encodeToString(data)
 

@@ -8,7 +8,12 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import dev.ryan.opencode.core.TerminalSignal
+import kotlinx.coroutines.flow.filterNotNull
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -46,13 +51,28 @@ class PtySocket(
     private val baseProvider: () -> okhttp3.HttpUrl,
     private val api: OpencodeClient,
     private val directoryProvider: () -> String,
-) {
+) : dev.ryan.opencode.core.TerminalLink {
     private val _signals = MutableSharedFlow<PtySignal>(
         replay = 0,
         extraBufferCapacity = 256,
         onBufferOverflow = BufferOverflow.DROP_OLDEST,
     )
-    val signals: Flow<PtySignal> = _signals.asSharedFlow()
+    private val _terminalSignals: Flow<TerminalSignal> = _signals
+        .map { sig ->
+            when (sig) {
+                is PtySignal.Attaching -> TerminalSignal.Attaching
+                is PtySignal.Opened -> TerminalSignal.Opened
+                is PtySignal.Output -> TerminalSignal.Output(sig.bytes)
+                // A control frame is server-internal bookkeeping (the cursor
+                // position used to resume). It is not something the emulator
+                // renders, so the UI-facing stream drops it.
+                is PtySignal.Control -> return@map null
+                is PtySignal.Dropped -> TerminalSignal.Dropped(sig.reason)
+            }
+        }
+        .filterNotNull()
+
+    override val signals: Flow<TerminalSignal> = _terminalSignals
 
     /**
      * Recent output, kept so a late or restarted consumer can catch up.
@@ -75,7 +95,7 @@ class PtySocket(
     private val historyLimit = 256 * 1024
 
     /** Output produced at or after [offset], oldest first. */
-    fun outputSince(offset: Long): List<ByteArray> = synchronized(historyLock) {
+    override fun outputSince(offset: Long): List<ByteArray> = synchronized(historyLock) {
         history.filter { it.first + it.second.size > offset }
             .map { it.second }
     }
@@ -89,7 +109,7 @@ class PtySocket(
     }
 
     private val _connected = MutableStateFlow(false)
-    val connected = _connected.asStateFlow()
+    override val connected: StateFlow<Boolean> = _connected.asStateFlow()
 
     private var socket: WebSocket? = null
     private var ptyId: String? = null
@@ -108,7 +128,7 @@ class PtySocket(
     var lastReplayBytes: Int = 0
         private set
 
-    fun consumedOffset(): Long = consumed.get()
+    override fun consumedOffset(): Long = consumed.get()
 
     fun attach(id: String, resetOffset: Boolean = true) {
         if (resetOffset) consumed.set(0)
@@ -226,24 +246,24 @@ class PtySocket(
     }
 
     /** Send literal bytes to the shell. Raw text frames only — see class docs. */
-    fun write(data: String) {
+    override fun write(data: String) {
         socket?.send(data)
     }
 
-    fun writeBytes(data: ByteArray) {
+    override fun writeBytes(data: ByteArray) {
         socket?.send(data.toString(Charsets.UTF_8))
     }
 
     /** Reply to a device report (cursor position, attributes) requested by the shell. */
-    fun reply(bytes: ByteArray) {
+    override fun reply(bytes: ByteArray) {
         socket?.send(bytes.toString(Charsets.UTF_8))
     }
 
-    suspend fun resize(cols: Int, rows: Int) {
-        sendLock.withLock { write("\u001b[8;${rows};${cols}t") }
+    override fun resize(cols: Int, rows: Int) {
+        scope.launch { sendLock.withLock { write("\u001b[8;${rows};${cols}t") } }
     }
 
-    fun detach() {
+    override fun detach() {
         closedByUs = true
         socket?.close(1000, "client detach")
         socket = null
@@ -254,7 +274,7 @@ class PtySocket(
      * Re-attach after a drop. Called by the connection supervisor; the tracked
      * byte offset means the server replays only what we missed.
      */
-    fun reattach() {
+    override fun reattach() {
         if (ptyId == null) return
         socket?.cancel()
         socket = null
