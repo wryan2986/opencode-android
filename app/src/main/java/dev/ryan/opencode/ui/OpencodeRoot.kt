@@ -35,6 +35,14 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.ui.unit.dp
 
 val LocalAppViewModel = staticCompositionLocalOf<AppViewModel> {
     error("AppViewModel not provided")
@@ -54,15 +62,29 @@ fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
 
     CompositionLocalProvider(LocalAppViewModel provides vm) {
         onPermissionsResolved()
-        if (!settings.configured) {
-            SettingsScreen(onComplete = { /* connection manager picks settings up reactively */ })
-            return@CompositionLocalProvider
-        }
 
-        // We already hold a token, so go and find the server rather than asking
-        // the user where it is. One match connects silently; more than one pops
-        // the chooser; none falls through to Settings with a failed state.
-        LaunchedEffect(Unit) { vm.autoConnect() }
+        val sshProfiles by vm.sshProfiles.collectAsState()
+
+        // The app is NOT gated on pairing with opencode. SSH is an independent
+        // transport that needs no pairing code at all, so requiring one to get
+        // anywhere made the SSH route unreachable on a fresh install — you had to
+        // pair with opencode just to be allowed to use SSH. Only chat and voice
+        // actually depend on the opencode API.
+        val hasAnyTransport = settings.configured || sshProfiles.isNotEmpty()
+
+        // Discovery needs a stored token to be meaningful; without one there is
+        // nothing to prove a host is ours, so it is skipped rather than run blind.
+        LaunchedEffect(Unit) { if (settings.configured) vm.autoConnect() }
+
+        var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
+        var showFirstRun by remember { mutableStateOf(!hasAnyTransport) }
+        if (showFirstRun && !hasAnyTransport) {
+            FirstRunDialog(
+                onPickSsh = { showFirstRun = false; tab = Tab.Terminal },
+                onPickOpencode = { showFirstRun = false; tab = Tab.Settings },
+                onDismiss = { showFirstRun = false },
+            )
+        }
 
         val chooserHosts by vm.chooserHosts.collectAsState()
         if (chooserHosts.size > 1) {
@@ -88,8 +110,6 @@ fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
             )
         }
 
-        var tab by rememberSaveable { mutableStateOf(Tab.Chat) }
-
         Scaffold(
             containerColor = MaterialTheme.colorScheme.background,
             bottomBar = {
@@ -110,12 +130,79 @@ fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
         ) { padding ->
             Box(Modifier.fillMaxSize().padding(padding)) {
                 when (tab) {
-                    Tab.Chat -> ChatScreen()
-                    Tab.Voice -> VoiceScreen()
+                    // These two talk to the opencode API, so without a session
+                    // token there is nothing to show. The shell does not — it can
+                    // run over SSH on its own.
+                    Tab.Chat -> if (settings.configured) ChatScreen() else NeedsOpencode(Tab.Chat)
+                    Tab.Voice -> if (settings.configured) VoiceScreen() else NeedsOpencode(Tab.Voice)
                     Tab.Terminal -> TerminalScreen()
                     Tab.Settings -> SettingsScreen()
                 }
             }
         }
     }
+}
+
+/**
+ * Shown on the tabs that genuinely need the opencode API, so the shell stays
+ * usable on its own rather than the whole app hiding behind a setup screen.
+ */
+@Composable
+private fun NeedsOpencode(tab: Tab) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Text(
+            "${tab.label} needs the opencode server",
+            style = MaterialTheme.typography.titleMedium,
+        )
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Pair once in Setup, or use the Shell tab over SSH — that works " +
+                "without opencode running at all.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+/** First run: pick a transport instead of dropping straight into a code prompt. */
+@Composable
+private fun FirstRunDialog(onPickSsh: () -> Unit, onPickOpencode: () -> Unit, onDismiss: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Connect how?") },
+        text = {
+            Column {
+                Text(
+                    "You have not connected this phone yet.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                Button(onClick = onPickSsh, modifier = Modifier.fillMaxWidth()) {
+                    Text("Shell over SSH")
+                }
+                Text(
+                    "No code needed. Copy the shown key into authorized_keys. " +
+                        "Works even when opencode is down.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(12.dp))
+                OutlinedButton(onClick = onPickOpencode, modifier = Modifier.fillMaxWidth()) {
+                    Text("Pair with opencode")
+                }
+                Text(
+                    "Needed for chat and voice. You pair once; after that the " +
+                        "server is found automatically.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {},
+    )
 }

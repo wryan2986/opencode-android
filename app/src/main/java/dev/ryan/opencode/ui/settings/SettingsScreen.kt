@@ -186,8 +186,9 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
 
         Text("Sign in", style = MaterialTheme.typography.titleSmall)
         Text(
-            "One-time setup. Mint a code against the serve instance and type it here; " +
-                "after that, discovery reconnects on its own. " +
+            "For chat and voice only — the shell works over SSH without any of this. " +
+                "One-time setup: mint a code against the serve instance and type it " +
+                "here; after that, discovery reconnects on its own. " +
                 "Your password is never stored on the phone.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

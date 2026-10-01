@@ -158,6 +158,13 @@ fun TerminalScreen() {
             }
         }
     }
+    // With no live transport there is nothing to render and no obvious way to pick
+    // one, so open the chooser rather than showing a blank screen. This is the path
+    // a fresh install takes: no pairing code, straight to choosing SSH.
+    LaunchedEffect(pty) {
+        if (pty == null) showRouteSheet = true
+    }
+
     var screenStarted by remember { mutableStateOf(false) }
     var frame by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
