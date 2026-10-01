@@ -1,3 +1,65 @@
+# opencode-android
+
+An Android client for [opencode](https://opencode.ai), plus a real terminal you can
+use when opencode is not running.
+
+- **Chat and voice** against an opencode server, over its own API.
+- **A terminal** that works two ways: through opencode's PTY, or over plain SSH so
+  it keeps working when the opencode server is down.
+- **tmux** from the phone — attach to any session on the box, including ones
+  started from your own terminal.
+- **Pair once.** Discovery finds the server again on every later launch.
+
+No account, no cloud service, no telemetry. The server is yours.
+
+## Quick start
+
+On the machine that will host opencode:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/wryan2986/opencode-android/main/install.sh | sudo sh
+```
+
+That prints a QR code. Install the app on your phone, point the camera at the
+screen, and you are connected. The server also needs to be reachable — same
+Wi-Fi, or over Tailscale — which the installer explains at the end.
+
+If the QR has gone stale by the time your camera is ready, run the installer with
+`--watch` and it will keep a fresh code on screen.
+
+## What it needs
+
+- **opencode** on the server. The installer will tell you if it is missing.
+- **Nothing else.** No account, no API key, no signing step for the user.
+
+The phone runs on Android 8.0 (API 26) or newer. A debug build is attached to the
+project releases for anyone who wants to try it immediately; a signed release
+build is produced by the release workflow.
+
+## What the phone can do
+
+| | |
+|---|---|
+| **Chat** | Full sessions, tool calls, reasoning blocks, permission prompts you can approve from the phone. |
+| **Voice** | Speech in, spoken replies, barge-in to interrupt mid-sentence. |
+| **Shell** | A real terminal emulator. Works over opencode, or over SSH independently. |
+| **tmux** | See and attach to tmux sessions on the box. Start them, or let the terminal spawn them. |
+| **Tasks** | Queue instructions, steer the agent mid-answer, and watch the sub-tasks it spins up. |
+
+## Licence
+
+MIT — see [LICENSE](LICENSE).
+
+## Security and revocation
+
+Read [SECURITY.md](SECURITY.md). In short: each device generates its own SSH key,
+keys are installed with `restrict`, and revoking a phone means deleting one line
+from `authorized_keys`.
+
+## Development
+
+Below this point is for people changing the code.
+
 # opencode for Android
 
 A native Android client for the opencode server that runs on your own box. It is
@@ -41,7 +103,7 @@ Two things: one command on the server, the app on the phone.
 ### Server
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<you>/opencode-android/main/install.sh | sudo sh
+curl -fsSL https://raw.githubusercontent.com/wryan2986/opencode-android/main/install.sh | sudo sh
 ```
 
 That installs or reconfigures the headless server and prints a pairing QR. It is
