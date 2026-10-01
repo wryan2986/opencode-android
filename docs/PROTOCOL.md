@@ -318,7 +318,25 @@ commit, so forwarding it verbatim echoes earlier characters — send only the de
 a message content part, while `input`/`output`/`status` live in its `state` object.
 Reading the name out of `state` yields a generic `tool` label for every historical call.
 
-### 15. Pairing codes are per-instance (a real trap)
+### 15. A session token is a durable, portable trust anchor
+
+The token from `GET /auth/connect/{code}` keeps working after the server restarts
+(verified: token minted before a `systemctl restart` still returns `200` on
+`/api/info`), and it is scoped to the instance that minted it. Verified matrix:
+
+| Target | Token accepted |
+|---|---|
+| `100.102.124.47:4096` (our serve instance) | `200` |
+| `home-server.tail0f4451.ts.net:4096` (same server, MagicDNS) | `200`, same pid |
+| `127.0.0.1:49374` (a different opencode) | `401` |
+| nothing listening | no answer |
+
+That makes the token usable as a discovery credential: probe a candidate host with
+the token and a `200` identifies the server without ever asking what "opencode"
+looks like. It also means `/api/info` staying `401` when unauthenticated is not a
+blocker for discovery — the probe is authenticated by design.
+
+### 16. Pairing codes are per-instance (a real trap)
 
 There are **two separate opencode server processes** on this box:
 

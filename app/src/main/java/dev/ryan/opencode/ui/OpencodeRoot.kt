@@ -30,6 +30,11 @@ import dev.ryan.opencode.ui.chat.ChatScreen
 import dev.ryan.opencode.ui.settings.SettingsScreen
 import dev.ryan.opencode.ui.terminal.TerminalScreen
 import dev.ryan.opencode.ui.voice.VoiceScreen
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.text.font.FontFamily
 
 val LocalAppViewModel = staticCompositionLocalOf<AppViewModel> {
     error("AppViewModel not provided")
@@ -52,6 +57,35 @@ fun OpencodeRoot(onPermissionsResolved: () -> Unit = {}) {
         if (!settings.configured) {
             SettingsScreen(onComplete = { /* connection manager picks settings up reactively */ })
             return@CompositionLocalProvider
+        }
+
+        // We already hold a token, so go and find the server rather than asking
+        // the user where it is. One match connects silently; more than one pops
+        // the chooser; none falls through to Settings with a failed state.
+        LaunchedEffect(Unit) { vm.autoConnect() }
+
+        val chooserHosts by vm.chooserHosts.collectAsState()
+        if (chooserHosts.size > 1) {
+            AlertDialog(
+                onDismissRequest = { /* stay put rather than guess */ },
+                title = { Text("Which server?") },
+                text = {
+                    Column {
+                        Text(
+                            "More than one machine accepted this phone's saved key.",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        chooserHosts.forEach { host ->
+                            TextButton(onClick = { vm.connectToHost(host) }) {
+                                Text(host, fontFamily = FontFamily.Monospace)
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(onClick = { vm.rediscover() }) { Text("Search again") }
+                },
+            )
         }
 
         var tab by rememberSaveable { mutableStateOf(Tab.Chat) }

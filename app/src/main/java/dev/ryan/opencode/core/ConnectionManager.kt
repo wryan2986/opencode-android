@@ -99,6 +99,21 @@ class ConnectionManager(
         )
     }
 
+    val discovery: ServerDiscovery by lazy {
+        ServerDiscovery(
+            clientProvider = { httpClient },
+            directoryProvider = { _settings.value.directory },
+        )
+    }
+
+    private val _discovered = MutableStateFlow<List<DiscoveredServer>>(emptyList())
+
+    /** Everything the last discovery run probed, reachable or not. */
+    val discovered: StateFlow<List<DiscoveredServer>> = _discovered.asStateFlow()
+
+    private val _discoveryBusy = MutableStateFlow(false)
+    val discoveryBusy: StateFlow<Boolean> = _discoveryBusy.asStateFlow()
+
     val tmux: TmuxRepository by lazy {
         TmuxRepository(
             api = api,
@@ -157,6 +172,58 @@ class ConnectionManager(
      */
     suspend fun restoreFrom(s: AppSettings) {
         if (s.configured && base == null) connect(s)
+    }
+
+    /**
+     * Re-find the server with the token we already hold, so a paired phone
+     * reconnects without anyone retyping a pairing code.
+     *
+     * Exactly one reachable host is the normal case and connects immediately.
+     * Several means genuinely ambiguous — two opencode servers both accepting our
+     * token, which happens if the same instance is reachable by both a tailnet IP
+     * and a DNS name. Rather than pick arbitrarily, the results are published in
+     * [discovered] and the caller shows a chooser.
+     *
+     * Returns the reachable candidates; zero means discovery failed and the user
+     * has to fall back to the pairing screen.
+     */
+    suspend fun reconnectViaDiscovery(): List<DiscoveredServer> {
+        val s = _settings.value
+        if (s.sessionToken.isBlank()) return emptyList()
+        _discoveryBusy.value = true
+        _state.value = ConnectionState.Connecting
+        try {
+            val results = discovery.discover(s.host, s.sessionToken)
+            _discovered.value = results
+            val live = results.filter { it.reachable }
+            Log.i(TAG, "discovery: ${live.size}/${results.size} reachable ${live.map { it.host }}")
+            when (live.size) {
+                0 -> {
+                    _reason.value = DisconnectReason.Unknown
+                    _state.value = ConnectionState.Failed
+                }
+                1 -> {
+                    val winner = live.first()
+                    if (winner.host != s.host) {
+                        settingsStore.setHost(winner.host)
+                        _settings.value = s.copy(host = winner.host)
+                    }
+                    connect(_settings.value)
+                }
+                else -> Unit // ambiguous: caller decides
+            }
+            return live
+        } finally {
+            _discoveryBusy.value = false
+        }
+    }
+
+    /** Connect to a specific host the user picked out of [discovered]. */
+    suspend fun connectTo(host: String) {
+        val s = _settings.value
+        settingsStore.setHost(host)
+        _settings.value = s.copy(host = host)
+        connect(_settings.value)
     }
 
     /** Apply new settings and reconnect from scratch. */

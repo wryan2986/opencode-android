@@ -154,9 +154,40 @@ fun SettingsScreen(onComplete: () -> Unit = {}) {
 
         HorizontalDivider(Modifier.padding(vertical = 6.dp))
 
+        // Pairing is a one-time setup step. Once a token is stored, discovery
+        // re-finds the server on its own and this whole section is a fallback —
+        // which is why it sits below "find my server" rather than being the
+        // first thing on screen.
+        Text("Find my server", style = MaterialTheme.typography.titleSmall)
+        Text(
+            "Uses the key already saved on this phone to look for the server. No code needed.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { vm.autoConnect() },
+                enabled = !vm.autoConnecting.collectAsState().value && settings.configured,
+            ) {
+                Text(if (vm.autoConnecting.collectAsState().value) "Searching…" else "Search")
+            }
+            Spacer(Modifier.width(10.dp))
+            Text(
+                when {
+                    !settings.configured -> "Pair once below to enable this."
+                    else -> "Last known: ${settings.host}"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        HorizontalDivider(Modifier.padding(vertical = 6.dp))
+
         Text("Sign in", style = MaterialTheme.typography.titleSmall)
         Text(
-            "Option A — pair from the server: run  opencode pair  over SSH and type the code here. " +
+            "One-time setup. Mint a code against the serve instance and type it here; " +
+                "after that, discovery reconnects on its own. " +
                 "Your password is never stored on the phone.",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,

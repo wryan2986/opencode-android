@@ -92,7 +92,7 @@ Note this consumes the code, so only use it to diagnose a failure.
 ```bash
 export ANDROID_HOME=~/Android/Sdk
 ./gradlew assembleDebug        # APK
-./gradlew testDebugUnitTest    # 126 tests
+./gradlew testDebugUnitTest    # 136 tests
 ./gradlew installDebug
 ```
 
@@ -101,7 +101,7 @@ Jetpack Compose (BOM 2024.12.01), OkHttp, kotlinx.serialization.
 
 ## Tests
 
-126 unit tests, no emulator required:
+136 unit tests, no emulator required:
 
 - **60** terminal emulator tests — ANSI/VT parsing, scroll regions, alternate
   screen, UTF-8 split across writes, wide/combining characters, 1 MB burst
@@ -114,6 +114,8 @@ Jetpack Compose (BOM 2024.12.01), OkHttp, kotlinx.serialization.
   inconsistent, and a silent mis-parse showed up as an empty session list.
 - **16** tmux tests — session-name validation (including shell-injection and
   flag-injection attempts) and `list-sessions` row parsing.
+- **10** discovery tests — candidate ordering, de-duplication, and port defaulting
+  (notably that an `https` tunnel is never given opencode's 4096).
 
 `docs/PROTOCOL.md` documents the verified wire protocol, including several things
 the published opencode docs get wrong.
@@ -182,6 +184,33 @@ effect via `PUT /api/pty/{id}`, so `ensureTerminal` now follows every create wit
 an explicit update. Without it the shell wraps at 80 columns while the grid is a
 different width and the prompt lands in the wrong column.
 
+## Discovery — why you pair once
+
+Pairing is a **one-time** setup step. After it, the app re-finds the server on
+every launch and never asks for a code again.
+
+It works by keeping the session token the code produced and using it as the trust
+anchor. On each connect the app races a small candidate list and asks one narrow
+question of each: **does the token I already hold work here?** A host that accepts
+it is the server; a host that returns 401 is a different opencode and is dropped.
+That is trust-on-first-use resolved: the first successful pairing is the trust
+decision, and discovery only has to relocate the thing already trusted.
+
+Candidates, best first:
+
+1. the host from the last successful connection
+2. `home-server.tail0f4451.ts.net` — Tailscale MagicDNS
+3. anything else previously seen
+
+**This is deliberately not mDNS.** The original plan was to publish `_opencode._tcp`
+and browse for it over the tailnet. That cannot work: mDNS is link-local, it
+resolves on a LAN and nowhere else, and the server is on a Tailscale CGNAT address
+in `100.x` that mDNS will never see. Tailscale MagicDNS does the same job for a
+tailnet, resolves only within the tailnet, and survives the IP changing — which is
+the case that actually needed solving.
+
+When several candidates accept the token, the app asks rather than guessing.
+
 ## Known gaps
 
 Honest list of what is not finished:
@@ -207,8 +236,10 @@ Honest list of what is not finished:
   two lines when collapsed.
 - **No release signing config** beyond the optional `keystore.properties` hook; the
   shipped artifact is a debug APK.
-- **Single server at a time.** The endpoint abstraction supports several, but the UI
-  edits one.
+- **Discovery covers Tailscale and LAN, not arbitrary networks.** It is a candidate
+  ladder, not a protocol, so it only finds a server whose address is already
+  guessable. A host behind a port-forward with no tailnet entry needs its address
+  typed in once — after which it becomes a remembered candidate like any other.
 - **tmux supports attach and kill, not rename.** Creating a session from the sheet
   works; renaming one still means typing `tmux rename-session` in the shell. The
   repository already has the call shape if you want it.

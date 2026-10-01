@@ -133,6 +133,50 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---- discovery ----
+
+    private val _chooserHosts = MutableStateFlow<List<String>>(emptyList())
+
+    /**
+     * Ambiguous discovery results, if any.
+     *
+     * Empty in the normal case: one server is found and connected to silently.
+     * Two or more means the chooser has to be shown.
+     */
+    val chooserHosts: StateFlow<List<String>> = _chooserHosts.asStateFlow()
+
+    private val _autoConnecting = MutableStateFlow(false)
+    val autoConnecting: StateFlow<Boolean> = _autoConnecting.asStateFlow()
+
+    /**
+     * Find the server with the token we already hold.
+     *
+     * This is the whole point of discovery: after the one pairing in setup, this
+     * is what runs on every launch, and it never asks the user for anything. Only
+     * when it comes back empty does the app fall back to the pairing screen.
+     */
+    fun autoConnect() {
+        if (_autoConnecting.value) return
+        viewModelScope.launch {
+            _autoConnecting.value = true
+            runCatching { connection.reconnectViaDiscovery() }
+                .onSuccess { live -> _chooserHosts.value = live.map { it.host } }
+                .onFailure {
+                    android.util.Log.w("AppViewModel", "discovery failed: ${it.message}")
+                }
+            _autoConnecting.value = false
+        }
+    }
+
+    /** Use a host the user picked out of the chooser. */
+    fun connectToHost(host: String) {
+        _chooserHosts.value = emptyList()
+        viewModelScope.launch { runCatching { connection.connectTo(host) } }
+    }
+
+    /** Re-run discovery on demand, e.g. after the phone changed network. */
+    fun rediscover() = autoConnect()
+
     // ---- tmux ----
 
     private val _tmuxSessions = MutableStateFlow<List<TmuxSession>>(emptyList())
