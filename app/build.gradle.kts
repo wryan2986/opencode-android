@@ -100,6 +100,15 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.android)
 
+    // SSH transport. sshj pulls BouncyCastle for its key exchange and host key
+    // checks; slf4j-android is the logging facade it binds to (sshj logs through
+    // SLF4J and would otherwise be silent). BouncyCastle is pinned explicitly
+    // because Android ships a stripped provider under the same package name.
+    implementation(libs.sshj)
+    implementation(libs.slf4j.android)
+    implementation(libs.bouncycastle.bcprov)
+    implementation(libs.bouncycastle.bcpkix)
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(libs.androidx.espresso.core)
