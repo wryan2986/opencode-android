@@ -30,6 +30,7 @@ import androidx.compose.material3.AssistChip
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -62,6 +63,8 @@ import dev.ryan.opencode.ui.LocalAppViewModel
 import kotlinx.coroutines.launch
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.material.icons.filled.Checklist
+import kotlinx.coroutines.delay
 
 @Composable
 fun ChatScreen() {
@@ -75,6 +78,24 @@ fun ChatScreen() {
 
     var composer by remember { mutableStateOf("") }
     var showSessions by remember { mutableStateOf(false) }
+    var showTasks by remember { mutableStateOf(false) }
+    // Default to steering: if the agent is mid-answer, that is almost always what
+    // the user meant, and it is the behaviour that makes this feel conversational.
+    var delivery by remember { mutableStateOf("steer") }
+
+    val queue by vm.chat.queue.collectAsState()
+    val subAgents by vm.chat.subAgents.collectAsState()
+    val agents by vm.chat.agents.collectAsState()
+    val activeAgent by vm.chat.activeAgent.collectAsState()
+
+    // Keep the queue and sub-agent list live; both change while the agent works.
+    LaunchedEffect(chatState.sessionId) {
+        vm.chat.refreshAgents()
+        while (true) {
+            vm.chat.refreshQueue()
+            delay(3000)
+        }
+    }
     val listState = rememberLazyListState()
 
     // Approvals can be raised while we were backgrounded (or by the TUI), so
@@ -97,6 +118,7 @@ fun ChatScreen() {
             sessions = sessions,
             activeId = chatState.sessionId,
             onToggle = { showSessions = !showSessions },
+            onShowTasks = { showTasks = true },
             onSelect = { session ->
                 showSessions = false
                 scope.launch {
@@ -156,10 +178,12 @@ fun ChatScreen() {
             value = composer,
             busy = chatState.busy,
             onChange = { composer = it },
+            delivery = delivery,
+            onToggleDelivery = { delivery = if (delivery == "steer") "queue" else "steer" },
             onSend = {
                 val text = composer.trim()
                 if (text.isNotEmpty()) {
-                    scope.launch { vm.chat.send(text) }
+                    scope.launch { vm.chat.sendAs(text, delivery) }
                     composer = ""
                 }
             },
@@ -207,6 +231,7 @@ private fun SessionBar(
     onToggle: () -> Unit,
     onSelect: (dev.ryan.opencode.core.model.Session) -> Unit,
     onNew: () -> Unit,
+    onShowTasks: () -> Unit,
     onRefresh: () -> Unit,
 ) {
     Box {
@@ -233,6 +258,7 @@ private fun SessionBar(
             if (busy) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
             IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Resync", Modifier.size(19.dp)) }
             IconButton(onClick = onNew) { Icon(Icons.Filled.Add, "New session", Modifier.size(21.dp)) }
+            IconButton(onClick = onShowTasks) { Icon(Icons.Filled.Checklist, "Tasks", Modifier.size(21.dp)) }
         }
 
         DropdownMenu(expanded = expanded, onDismissRequest = onToggle) {
@@ -395,6 +421,8 @@ private fun Composer(
     onChange: (String) -> Unit,
     onSend: () -> Unit,
     onStop: () -> Unit,
+    delivery: String = "steer",
+    onToggleDelivery: () -> Unit = {},
 ) {
     // Edge-to-edge: the composer has to lift itself above the IME. Without this
     // it renders underneath the keyboard and the app looks like it has no input
@@ -415,7 +443,27 @@ private fun Composer(
             maxLines = 5,
             shape = RoundedCornerShape(20.dp),
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(6.dp))
+        // Explicit, because steer and queue behave very differently and the user
+        // needs to know which one they are about to do.
+        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            FilterChip(
+                selected = delivery == "steer",
+                onClick = onToggleDelivery,
+                label = {
+                    Text(
+                        delivery,
+                        style = MaterialTheme.typography.labelSmall,
+                    )
+                },
+            )
+            Text(
+                if (delivery == "steer") "now" else "after",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(6.dp))
         FilledIconButton(
             onClick = { if (busy) onStop() else onSend() },
             modifier = Modifier.size(46.dp),

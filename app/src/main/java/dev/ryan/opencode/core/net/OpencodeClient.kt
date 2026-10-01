@@ -1,6 +1,8 @@
 package dev.ryan.opencode.core.net
 
 import dev.ryan.opencode.core.model.AgentInfo
+import dev.ryan.opencode.core.model.InboxItem
+import kotlinx.serialization.builtins.serializer
 import dev.ryan.opencode.core.model.CommandInfo
 import dev.ryan.opencode.core.model.ConnectTokenEnvelope
 import dev.ryan.opencode.core.model.Message
@@ -194,14 +196,57 @@ class OpencodeClient(
     }
 
     /** Fire-and-forget prompt. Streaming arrives over the event stream, not this call. */
-    suspend fun prompt(sessionId: String, text: String, directory: String): Message {
-        val body = OpencodeJson.encodeToString(
-            kotlinx.serialization.serializer(),
-            PromptBody(text = text)
-        )
+    /**
+     * Send a prompt.
+     *
+     * [delivery] is the interesting one: `steer` injects this into the turn that is
+     * already running — the conversational "actually, do this instead" primitive —
+     * while `queue` waits for the current turn to finish. Sending `steer` at an
+     * idle session is harmless; it is delivered immediately.
+     */
+    suspend fun prompt(
+        sessionId: String,
+        text: String,
+        directory: String,
+        delivery: String? = null,
+    ): Message {
+        val body = buildString {
+            append("{\"text\":").append(OpencodeJson.encodeToString(String.serializer(), text))
+            if (delivery != null) append(",\"delivery\":\"").append(delivery).append("\"")
+            append("}")
+        }
         val raw = post("/api/session/$sessionId/prompt", body, mapOf("location[directory]" to directory))
         return OpencodeJson.decodeFromString<Map<String, Message>>(raw)["data"]
             ?: throw ApiException(-1, "Malformed prompt response")
+    }
+
+    /** Durable work not yet delivered to the session. */
+    suspend fun inbox(sessionId: String, directory: String): List<InboxItem> =
+        OpencodeJson.decodeFromString<InboxListEnvelope>(
+            get("/api/session/$sessionId/inbox", mapOf("location[directory]" to directory))
+        ).data
+
+    /** Cancel a queued item. A no-op once it has been delivered. */
+    suspend fun cancelInbox(sessionId: String, inboxId: String, directory: String) {
+        runCatching {
+            delete("/api/session/$sessionId/inbox/$inboxId", mapOf("location[directory]" to directory))
+        }
+    }
+
+    /** Move running backgroundable tools into background observation. */
+    suspend fun moveToBackground(sessionId: String, directory: String) {
+        runCatching {
+            post("/api/session/$sessionId/background", "{}", mapOf("location[directory]" to directory))
+        }
+    }
+
+    /** Switch the agent used by subsequent turns in this session. */
+    suspend fun setSessionAgent(sessionId: String, agent: String, directory: String) {
+        post(
+            "/api/session/$sessionId/agent",
+            "{\"agent\":\"" + agent.replace("\"", "") + "\"}",
+            mapOf("location[directory]" to directory),
+        )
     }
 
     /** Hard stop for the current turn — this is the barge-in primitive for voice mode. */
@@ -342,6 +387,9 @@ class OpencodeClient(
 
 @kotlinx.serialization.Serializable
 data class PromptBody(val text: String)
+
+@kotlinx.serialization.Serializable
+data class InboxListEnvelope(val data: List<InboxItem> = emptyList())
 
 @kotlinx.serialization.Serializable
 data class ModelSelection(val providerID: String, val modelID: String)

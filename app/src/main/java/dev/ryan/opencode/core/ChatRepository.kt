@@ -20,6 +20,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import dev.ryan.opencode.core.model.InboxItem
+import dev.ryan.opencode.core.model.AgentInfo
 
 /**
  * What the chat screen renders. Built by folding the event stream onto the
@@ -459,6 +461,86 @@ class ChatRepository(
                 .filter { it.sessionID == _state.value.sessionId }
             _state.value = _state.value.copy(pendingApprovals = pending)
         }
+    }
+
+    // ---- task queue, sub-agents, agents ----
+
+    private val _queue = MutableStateFlow<List<InboxItem>>(emptyList())
+    val queue: StateFlow<List<InboxItem>> = _queue.asStateFlow()
+
+    /**
+     * Child sessions — the sub-agent threads opencode spawns for itself.
+     *
+     * These are real, addressable sessions with a `parentID`, so what the agent
+     * fans out to is visible and openable here rather than hidden inside a tool
+     * call. Filtering is client-side because the list endpoint returns both.
+     */
+    private val _subAgents = MutableStateFlow<List<Session>>(emptyList())
+    val subAgents: StateFlow<List<Session>> = _subAgents.asStateFlow()
+
+    private val _agents = MutableStateFlow<List<AgentInfo>>(emptyList())
+    val agents: StateFlow<List<AgentInfo>> = _agents.asStateFlow()
+
+    private val _activeAgent = MutableStateFlow<String?>(null)
+    val activeAgent: StateFlow<String?> = _activeAgent.asStateFlow()
+
+    /** Refresh the queue and the spawned sub-agent list for the open session. */
+    suspend fun refreshQueue() {
+        val sid = _state.value.sessionId
+        if (sid.isBlank()) return
+        runCatching { connection.api.inbox(sid, directory) }
+            .onSuccess { _queue.value = it }
+            .onFailure { android.util.Log.w("ChatRepository", "inbox failed: ${it.message}") }
+        _subAgents.value = _sessions.value.filter { it.parentID == sid }
+    }
+
+    suspend fun refreshAgents() {
+        runCatching { connection.api.agents(directory) }
+            .onSuccess { _agents.value = it }
+    }
+
+    fun cancelQueued(id: String) {
+        val sid = _state.value.sessionId
+        scope.launch {
+            runCatching { connection.api.cancelInbox(sid, id, directory) }
+            refreshQueue()
+        }
+    }
+
+    /** Switch agent for subsequent turns. Takes effect from the next turn. */
+    fun useAgent(name: String) {
+        val sid = _state.value.sessionId
+        if (sid.isBlank()) return
+        scope.launch {
+            runCatching { connection.api.setSessionAgent(sid, name, directory) }
+                .onSuccess { _activeAgent.value = name }
+                .onFailure { android.util.Log.w("ChatRepository", "agent switch failed: ${it.message}") }
+        }
+    }
+
+    /** Move running tools into background observation. */
+    fun sendToBackground() {
+        val sid = _state.value.sessionId
+        if (sid.isBlank()) return
+        scope.launch {
+            runCatching { connection.api.moveToBackground(sid, directory) }
+                .onFailure { android.util.Log.w("ChatRepository", "background failed: ${it.message}") }
+        }
+    }
+
+    /**
+     * Send with an explicit delivery.
+     *
+     * `steer` reaches the running turn immediately, which is what makes this feel
+     * conversational rather than a queue you shout into. `queue` is the safe
+     * default when the user is laying up work for later.
+     */
+    suspend fun sendAs(text: String, delivery: String) {
+        val sid = _state.value.sessionId
+        if (sid.isBlank()) return
+        runCatching { connection.api.prompt(sid, text, directory, delivery) }
+            .onSuccess { refreshQueue() }
+            .onFailure { android.util.Log.w("ChatRepository", "send($delivery) failed: ${it.message}") }
     }
 
     suspend fun send(text: String) {

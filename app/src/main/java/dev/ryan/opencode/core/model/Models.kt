@@ -302,3 +302,25 @@ enum class DisconnectReason {
     AuthFailed,
     Unknown,
 }
+
+/**
+ * One item waiting in the session inbox.
+ *
+ * [delivery] is the field that matters: `steer` means the server injects this into
+ * the turn already running — the conversational "actually, do this instead"
+ * primitive — while `queue` means it waits for the current turn to finish. A UI
+ * that hides the difference makes a steered message look like it was ignored.
+ */
+@kotlinx.serialization.Serializable
+data class InboxItem(
+    val id: String = "",
+    val type: String = "user",
+    val text: String = "",
+    val delivery: String = "queue",
+    val created: Long = 0,
+) {
+    val isSteer: Boolean get() = delivery == "steer"
+
+    /** One line, collapsed — the queue is read at a glance, not studied. */
+    val summary: String get() = text.trim().replace(Regex("\\s+"), " ").take(90)
+}
