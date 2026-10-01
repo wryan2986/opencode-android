@@ -22,6 +22,7 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import kotlinx.serialization.builtins.serializer
 
 /**
  * Thin typed wrapper over the opencode v2 REST API.
@@ -67,6 +68,19 @@ class OpencodeClient(
         )
         headers.forEach { (k, v) -> rb.header(k, v) }
         val res = http.client.await(rb.build())
+        val text = res.body?.string().orEmpty()
+        if (!res.isSuccessful) throw ApiException(res.code, res.errorMessage())
+        text
+    }
+
+    private suspend fun put(
+        path: String,
+        body: String,
+        params: Map<String, String> = emptyMap(),
+    ): String = withContext(Dispatchers.IO) {
+        val res = http.client.await(
+            Request.Builder().url(url(path, params)).put(body.toRequestBody(jsonMedia)).build()
+        )
         val text = res.body?.string().orEmpty()
         if (!res.isSuccessful) throw ApiException(res.code, res.errorMessage())
         text
@@ -256,6 +270,19 @@ class OpencodeClient(
             get("/api/pty", mapOf("location[directory]" to directory))
         ).data
 
+    /**
+     * Create a server-side PTY.
+     *
+     * `cols`/`rows` are accepted for call-site symmetry but **the server discards
+     * them**: the `POST /api/pty` schema is `command, args, cwd, title, env` with
+     * `additionalProperties: false` — there is no `size` field at all. Verified
+     * against 2.0.21: a create asking for 120x40 yields a PTY reporting 24x80.
+     * Always follow this with [updatePty] to get the size you actually wanted.
+     *
+     * The server also appends `-l` to [args]. So `args = ["attach","-t","x"]`
+     * arrives as `attach -t x -l`, and tmux rejects that with
+     * `unknown flag -l`. Wrap such commands as `["-c", "exec tmux attach -t x"]`.
+     */
     suspend fun createPty(
         directory: String,
         command: String = "bash",
@@ -271,6 +298,24 @@ class OpencodeClient(
         return OpencodeJson.decodeFromString<PtyCreateEnvelope>(
             post("/api/pty", body, mapOf("location[directory]" to directory))
         ).data
+    }
+
+    /**
+     * Resize (and optionally retitle) an existing PTY.
+     *
+     * This is the only way size takes effect — see [createPty]. tmux reads the
+     * window size from its client on attach, so a tmux PTY resized here re-flows
+     * rather than wrapping at the stale 24x80.
+     */
+    suspend fun updatePty(ptyId: String, directory: String, cols: Int, rows: Int, title: String? = null) {
+        val payload = buildString {
+            append("{")
+            if (title != null) {
+                append("\"title\":").append(OpencodeJson.encodeToString(String.serializer(), title)).append(",")
+            }
+            append("\"size\":{\"cols\":").append(cols).append(",\"rows\":").append(rows).append("}}")
+        }
+        runCatching { put("/api/pty/$ptyId", payload, mapOf("location[directory]" to directory)) }
     }
 
     /**

@@ -245,7 +245,39 @@ request manually.
   buffer plus the client's tracked byte offset reconstructs the screen after any
   disconnect. This is the single biggest simplification versus a terminal emulator.
 
-### 12. Client bugs found while building this app
+### 12. PTY size cannot be set on create
+
+`POST /api/pty` takes `{command, args, cwd, title, env}` with
+`additionalProperties: false` — **there is no `size` field**, and a `size` in the
+create body is dropped without complaint. Every PTY therefore starts at the server
+default 24x80. Verified 2.0.21: a create asking for 120x40 yields a PTY whose
+`stty size` reports `24 80`.
+
+Size only takes effect through `PUT /api/pty/{id}`, whose body is
+`{title?, size:{cols, rows}}` ("Update the title or viewport size of one PTY
+session"). Verified: create → `PUT {size:{cols:200,rows:60}}` → `stty size` reports
+`60 200`. So the client must PUT immediately after every create, and again whenever
+the viewport changes.
+
+Also note the server **appends `-l` to `args`**. An `args` of
+`["attach","-t","work"]` arrives as `attach -t work -l`, which tmux rejects with
+`unknown flag -l`. Wrap such commands as `["-c", "exec tmux attach -t work"]`.
+
+### 13. `PrivateTmp` isolates tmux
+
+The systemd unit for the serve instance must **not** set `PrivateTmp=true`. tmux's
+default socket is `/tmp/tmux-$UID/default`, and a private `/tmp` gives the service
+(and every PTY it spawns) its own isolated tmux server. Verified: with
+`PrivateTmp=true`, a PTY running `TMUX_TMPDIR=/tmp tmux ls` could not see a
+session created in the host shell; with it disabled, plain `tmux ls` from a PTY
+lists the host's sessions and a session created from a PTY appears in the host
+shell.
+
+`TMUX_TMPDIR` is not a reliable workaround: when `$TMUX` is set (i.e. the caller is
+itself inside a tmux client) tmux ignores it entirely and connects to `$TMUX`'s
+socket. Use the default socket and keep `PrivateTmp` off.
+
+### 14. Client bugs found while building this app
 
 Recorded because each one produced a *plausible-looking* wrong UI rather than an error,
 which is what made them expensive.
@@ -286,7 +318,7 @@ commit, so forwarding it verbatim echoes earlier characters — send only the de
 a message content part, while `input`/`output`/`status` live in its `state` object.
 Reading the name out of `state` yields a generic `tool` label for every historical call.
 
-### 13. Pairing codes are per-instance (a real trap)
+### 15. Pairing codes are per-instance (a real trap)
 
 There are **two separate opencode server processes** on this box:
 

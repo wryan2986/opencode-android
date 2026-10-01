@@ -92,7 +92,7 @@ Note this consumes the code, so only use it to diagnose a failure.
 ```bash
 export ANDROID_HOME=~/Android/Sdk
 ./gradlew assembleDebug        # APK
-./gradlew testDebugUnitTest    # 110 tests
+./gradlew testDebugUnitTest    # 126 tests
 ./gradlew installDebug
 ```
 
@@ -101,7 +101,7 @@ Jetpack Compose (BOM 2024.12.01), OkHttp, kotlinx.serialization.
 
 ## Tests
 
-110 unit tests, no emulator required:
+126 unit tests, no emulator required:
 
 - **60** terminal emulator tests — ANSI/VT parsing, scroll regions, alternate
   screen, UTF-8 split across writes, wide/combining characters, 1 MB burst
@@ -112,6 +112,8 @@ Jetpack Compose (BOM 2024.12.01), OkHttp, kotlinx.serialization.
 - **19** API parsing tests driven by **real captured responses**, including a
   50-session payload. These exist because the server's response envelope is
   inconsistent, and a silent mis-parse showed up as an empty session list.
+- **16** tmux tests — session-name validation (including shell-injection and
+  flag-injection attempts) and `list-sessions` row parsing.
 
 `docs/PROTOCOL.md` documents the verified wire protocol, including several things
 the published opencode docs get wrong.
@@ -144,6 +146,42 @@ Installed on an emulator and driven against the **real** production server:
   reattached at offset 4274, received output produced while offline, zero
   duplicated bytes.
 
+## tmux
+
+The terminal can attach to any tmux session running on the box, and the header
+has a **tmux** button to pick one. After a reboot every session is gone, so the
+base shell remains the launcher: `tmux new -A -s work` from the terminal is
+still how you start one.
+
+Nothing server-side was added or patched for this. tmux is just a program in a
+PTY, so it rides the same `/api/pty` API the shell already used.
+
+Three things about this are load-bearing:
+
+- **The unit must not run with `PrivateTmp=true`.** tmux's default socket lives
+  in `/tmp`, and a private `/tmp` gives every PTY its own tmux server — invisible
+  to both your shell and the app. With it off, a session started from the phone
+  shows up in your terminal and vice versa.
+- **Session names are validated, not escaped.** They reach a `bash -c` string, so
+  only `[A-Za-z0-9][A-Za-z0-9_-]{0,63}` is accepted. No quotes, spaces, `;`, `$`,
+  backticks, and no leading `-` (which tmux would read as a flag).
+- **Attach is wrapped in `exec`.** The server appends `-l` to PTY args, so
+  `tmux attach -t x` would arrive as `attach -t x -l` and fail with
+  `unknown flag -l`. `bash -c "exec tmux attach -t x"` both dodges that and puts
+  tmux directly in charge of the PTY, so a resize reaches the client.
+
+A size the server actually honours is required for all of this; see the PTY size
+note below.
+
+## PTY size is set after create, not during
+
+`POST /api/pty` has no `size` field — the schema is `command, args, cwd, title,
+env` with `additionalProperties: false`. The size in the create body is silently
+dropped and every PTY starts at the server default **24x80**. Size only takes
+effect via `PUT /api/pty/{id}`, so `ensureTerminal` now follows every create with
+an explicit update. Without it the shell wraps at 80 columns while the grid is a
+different width and the prompt lands in the wrong column.
+
 ## Known gaps
 
 Honest list of what is not finished:
@@ -171,3 +209,13 @@ Honest list of what is not finished:
   shipped artifact is a debug APK.
 - **Single server at a time.** The endpoint abstraction supports several, but the UI
   edits one.
+- **tmux supports attach and kill, not rename.** Creating a session from the sheet
+  works; renaming one still means typing `tmux rename-session` in the shell. The
+  repository already has the call shape if you want it.
+- **tmux sessions are only listed, never mirrored.** The sheet polls every 4s while
+  open, so a session created elsewhere appears without a manual refresh, but there
+  is no push notification for it.
+- **An in-place resize splices the terminal grid**, because the emulator has no
+  reflow. A tmux client is resized in place (a teardown would detach it), so after
+  a rotation the tmux pane redraws correctly but the surrounding grid may show a
+  seam until the next redraw. A plain shell is still recreated outright.

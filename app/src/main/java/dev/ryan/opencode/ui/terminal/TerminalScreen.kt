@@ -19,6 +19,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -121,8 +122,24 @@ fun TerminalScreen() {
     val connected by pty.connected.collectAsState()
     val settings by vm.settings.collectAsState()
 
+    val tmuxSessions by vm.tmuxSessions.collectAsState()
+    val tmuxAttached by vm.tmuxAttached.collectAsState()
+    val tmuxBusy by vm.tmuxBusy.collectAsState()
+
     val emulator = remember { TerminalEmulator(cols = 100, rows = 30) }
     var lastSize by remember { mutableStateOf(0 to 0) }
+    var showTmuxSheet by remember { mutableStateOf(false) }
+
+    // The list is a live query against the box, so refresh on open and whenever
+    // the sheet is showing — sessions come and go from your other terminals too.
+    LaunchedEffect(showTmuxSheet) {
+        if (showTmuxSheet) {
+            while (true) {
+                vm.refreshTmux()
+                kotlinx.coroutines.delay(4000)
+            }
+        }
+    }
     var screenStarted by remember { mutableStateOf(false) }
     var frame by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState()
@@ -205,6 +222,12 @@ fun TerminalScreen() {
                 color = Color(0xFF9CA3AF),
             )
             Spacer(Modifier.weight(1f))
+            tmuxAttached?.let { name ->
+                TmuxBadge(name) { vm.detachTmux(lastSize.first, lastSize.second) }
+                Spacer(Modifier.width(8.dp))
+            }
+            TextButton(onClick = { showTmuxSheet = true }) { Text("tmux") }
+            Spacer(Modifier.width(8.dp))
             Text(
                 "offset ${pty.consumedOffset()}",
                 style = MaterialTheme.typography.labelSmall,
@@ -234,7 +257,12 @@ fun TerminalScreen() {
                 // Grid and PTY must agree on width. If they disagree the shell
                 // wraps for its own width and the prompt lands in the wrong place.
                 emulator.resize(cols, rows)
-                if (first) vm.ensureTerminal(cols, rows) else vm.restartTerminal(cols, rows)
+                // A tmux client must not be torn down on resize: that kills the
+                // client and silently detaches. Everything else is fine to
+                // restart, because the emulator has no reflow.
+                if (first) vm.ensureTerminal(cols, rows)
+                else if (tmuxAttached != null) vm.resizeTerminal(cols, rows)
+                else vm.restartTerminal(cols, rows)
             }
         }) {
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
@@ -259,6 +287,21 @@ fun TerminalScreen() {
         }
 
         ExtraKeysRow(onKey = { pty.write(it) })
+
+        if (showTmuxSheet) {
+            TmuxSheet(
+                sessions = tmuxSessions,
+                busy = tmuxBusy,
+                attached = tmuxAttached,
+                onAttach = { name ->
+                    vm.attachTmux(name, lastSize.first, lastSize.second)
+                    showTmuxSheet = false
+                },
+                onKill = { vm.killTmuxSession(it) },
+                onCreate = { vm.createTmuxSession(it) },
+                onDismiss = { showTmuxSheet = false },
+            )
+        }
     }
 }
 

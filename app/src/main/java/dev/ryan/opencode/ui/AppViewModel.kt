@@ -7,6 +7,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import dev.ryan.opencode.core.ChatRepository
 import dev.ryan.opencode.core.ConnectionManager
+import dev.ryan.opencode.core.TmuxSession
 import dev.ryan.opencode.core.model.ConnectionState
 import dev.ryan.opencode.core.model.DisconnectReason
 import dev.ryan.opencode.core.net.PtySignal
@@ -43,6 +44,9 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
 
     private val ptyStarting = AtomicBoolean(false)
     private val _ptyId = MutableStateFlow<String?>(null)
+
+    /** Last size we successfully pushed to the server, to avoid redundant PUTs. */
+    private var ptySize = 0 to 0
     val ptyId: StateFlow<String?> = _ptyId.asStateFlow()
 
     /** Set by the UI when a stream signals, so we can react (notifications, TTS). */
@@ -97,12 +101,108 @@ class AppViewModel(app: Application) : AndroidViewModel(app) {
             runCatching { connection.api.createPty(dir, cols = cols, rows = rows) }
                 .onSuccess {
                     _ptyId.value = it.id
+                    // POST /api/pty has no `size` field and drops it, so the PTY
+                    // comes up at the server default 24x80 whatever we asked for.
+                    // Without this the shell wraps at 80 while the grid is a
+                    // different width and the prompt lands in the wrong column.
+                    connection.api.updatePty(it.id, dir, cols, rows)
+                    ptySize = cols to rows
                     connection.pty.attach(it.id)
                 }
                 .onFailure {
                     android.util.Log.w("AppViewModel", "pty create failed: ${it.message}")
                 }
             ptyStarting.set(false)
+        }
+    }
+
+    /**
+     * Resize the live PTY without destroying it.
+     *
+     * Prefer this over [restartTerminal] whenever something long-lived lives in
+     * the PTY — a tmux client especially, which a teardown would detach. A plain
+     * shell still reads better with [restartTerminal] after a real rotation,
+     * because the emulator has no reflow.
+     */
+    fun resizeTerminal(cols: Int, rows: Int) {
+        val id = _ptyId.value ?: return
+        if (ptySize.first == cols && ptySize.second == rows) return
+        ptySize = cols to rows
+        viewModelScope.launch {
+            runCatching { connection.api.updatePty(id, settings.value.directory, cols, rows) }
+        }
+    }
+
+    // ---- tmux ----
+
+    private val _tmuxSessions = MutableStateFlow<List<TmuxSession>>(emptyList())
+    val tmuxSessions: StateFlow<List<TmuxSession>> = _tmuxSessions.asStateFlow()
+
+    private val _tmuxAttached = MutableStateFlow<String?>(null)
+
+    /** Session currently occupying the terminal, or null for a plain shell. */
+    val tmuxAttached: StateFlow<String?> = _tmuxAttached.asStateFlow()
+
+    private val _tmuxBusy = MutableStateFlow(false)
+    val tmuxBusy: StateFlow<Boolean> = _tmuxBusy.asStateFlow()
+
+    fun refreshTmux() {
+        viewModelScope.launch {
+            _tmuxBusy.value = true
+            runCatching { connection.tmux.list() }
+                .onSuccess { _tmuxSessions.value = it }
+                .onFailure { android.util.Log.w("AppViewModel", "tmux list failed: ${it.message}") }
+            _tmuxBusy.value = false
+        }
+    }
+
+    /** Replace the terminal with a client attached to [name]. */
+    fun attachTmux(name: String, cols: Int, rows: Int) {
+        if (!connection.tmux.isValidName(name)) return
+        viewModelScope.launch {
+            _tmuxBusy.value = true
+            closeTerminal()
+            val dir = settings.value.directory
+            val (command, args) = connection.tmux.attachCommand(name)
+            runCatching {
+                connection.api.createPty(dir, command, args, cols = cols, rows = rows, title = "tmux:$name")
+            }
+                .onSuccess {
+                    _ptyId.value = it.id
+                    connection.api.updatePty(it.id, dir, cols, rows)
+                    ptySize = cols to rows
+                    _tmuxAttached.value = name
+                    connection.pty.attach(it.id)
+                }
+                .onFailure { android.util.Log.w("AppViewModel", "tmux attach failed: ${it.message}") }
+            _tmuxBusy.value = false
+        }
+    }
+
+    /** Leave the session and hand the terminal back to a plain shell. */
+    fun detachTmux(cols: Int = 100, rows: Int = 30) {
+        _tmuxAttached.value = null
+        closeTerminal()
+        ensureTerminal(cols, rows)
+    }
+
+    fun createTmuxSession(name: String) {
+        if (!connection.tmux.isValidName(name)) return
+        viewModelScope.launch {
+            _tmuxBusy.value = true
+            runCatching { connection.tmux.create(name) }.onSuccess { refreshTmux() }
+            _tmuxBusy.value = false
+        }
+    }
+
+    fun killTmuxSession(name: String) {
+        if (!connection.tmux.isValidName(name)) return
+        viewModelScope.launch {
+            _tmuxBusy.value = true
+            runCatching { connection.tmux.kill(name) }.onSuccess {
+                if (_tmuxAttached.value == name) detachTmux() else refreshTmux()
+            }
+            _tmuxBusy.value = false
         }
     }
 

@@ -99,6 +99,15 @@ class ConnectionManager(
         )
     }
 
+    val tmux: TmuxRepository by lazy {
+        TmuxRepository(
+            api = api,
+            clientProvider = { httpClient },
+            baseProvider = { base ?: error("not configured") },
+            directoryProvider = { _settings.value.directory },
+        )
+    }
+
     private val started = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
 
