@@ -60,6 +60,8 @@ import dev.ryan.opencode.core.model.ConnectionState
 import dev.ryan.opencode.core.net.describe
 import dev.ryan.opencode.ui.LocalAppViewModel
 import kotlinx.coroutines.launch
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 
 @Composable
 fun ChatScreen() {
@@ -209,14 +211,21 @@ private fun SessionBar(
 ) {
     Box {
         Row(
-            Modifier.fillMaxWidth().clickable { onToggle() }
+            Modifier.fillMaxWidth()
+                // The toggle lives on the title column only. It used to wrap the
+                // whole Row, which meant tapping Resync or + also opened the
+                // session menu — the buttons were fighting the bar they sit in.
                 .padding(horizontal = 12.dp, vertical = 10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Column(Modifier.weight(1f)) {
+            Column(
+                Modifier
+                    .weight(1f)
+                    .clickable { onToggle() },
+            ) {
                 Text(title, style = MaterialTheme.typography.titleSmall, maxLines = 1)
                 Text(
-                    "${sessions.size} session${if (sessions.size == 1) "" else "s"}",
+                    "${sessions.size} session${if (sessions.size == 1) "" else "s"} · tap to switch",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -227,7 +236,10 @@ private fun SessionBar(
         }
 
         DropdownMenu(expanded = expanded, onDismissRequest = onToggle) {
-            sessions.take(40).forEach { s ->
+            // Never truncate silently: a capped list that gives no hint reads as
+            // "those are all my sessions", which is how people conclude their
+            // history has gone missing.
+            sessions.sortedByDescending { it.time.updated }.forEach { s ->
                 DropdownMenuItem(
                     text = {
                         Column {
@@ -384,8 +396,15 @@ private fun Composer(
     onSend: () -> Unit,
     onStop: () -> Unit,
 ) {
+    // Edge-to-edge: the composer has to lift itself above the IME. Without this
+    // it renders underneath the keyboard and the app looks like it has no input
+    // at all — which reads as broken rather than as a layout bug.
     Row(
-        Modifier.fillMaxWidth().padding(10.dp),
+        Modifier
+            .fillMaxWidth()
+            .imePadding()
+            .navigationBarsPadding()
+            .padding(10.dp),
         verticalAlignment = Alignment.Bottom,
     ) {
         OutlinedTextField(

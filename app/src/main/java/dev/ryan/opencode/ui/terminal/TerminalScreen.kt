@@ -67,6 +67,8 @@ import dev.ryan.opencode.terminal.TerminalEmulator
 import dev.ryan.opencode.terminal.WideState
 import dev.ryan.opencode.ui.LocalAppViewModel
 import dev.ryan.opencode.core.TerminalSignal
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.focusable
 
 private val TermBg = Color(0xFF0B0B0F)
 private val TermFg = Color(0xFFD4D4D8)
@@ -213,7 +215,14 @@ fun TerminalScreen() {
         if (lines.isNotEmpty()) listState.animateScrollToItem(lines.size - 1)
     }
 
-    Column(Modifier.fillMaxSize().background(TermBg)) {
+    // imePadding because the activity is edge-to-edge: without it the extra-keys
+    // row ends up under the keyboard, taking ESC with it.
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(TermBg)
+            .imePadding(),
+    ) {
         // Hidden input: the soft keyboard delivers printable text as IME commits,
         // which bypasses onKeyEvent entirely. A 1px transparent field keeps the IME
         // available while the grid stays the only visible thing.
@@ -231,7 +240,14 @@ fun TerminalScreen() {
             },
             cursorBrush = SolidColor(Color.Transparent),
             textStyle = TextStyle(color = Color.Transparent, fontSize = 1.sp),
-            modifier = Modifier.size(1.dp).alpha(0f),
+            // The focus requester belongs HERE, not on the scroll box. It used to
+            // sit on that Box, so requestFocus() focused something with no IME
+            // connection and the soft keyboard never came up at all. Only a
+            // focused text field can raise the keyboard.
+            modifier = Modifier
+                .size(1.dp)
+                .alpha(0f)
+                .focusRequester(focusRequester),
         )
 
         Row(
@@ -280,7 +296,7 @@ fun TerminalScreen() {
                 .weight(1f)
                 .fillMaxSize()
                 .padding(horizontal = 4.dp)
-                .focusRequester(focusRequester)
+                .focusable()
                 .onKeyEvent { keyHandler?.onKey(it) ?: false }
                 .onSizeChanged { size ->
             // Size the grid to the real viewport, and create the PTY at that size
