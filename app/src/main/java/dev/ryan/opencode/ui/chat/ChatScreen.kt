@@ -69,6 +69,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.DeleteOutline
 import dev.ryan.opencode.core.model.Session
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Badge
+import androidx.compose.material3.BadgedBox
 
 @Composable
 fun ChatScreen() {
@@ -86,6 +88,7 @@ fun ChatScreen() {
     // Default to steering: if the agent is mid-answer, that is almost always what
     // the user meant, and it is the behaviour that makes this feel conversational.
     var delivery by remember { mutableStateOf("steer") }
+    val attentionCount by vm.chat.attentionCount.collectAsState()
 
     val queue by vm.chat.queue.collectAsState()
     val subAgents by vm.chat.subAgents.collectAsState()
@@ -123,6 +126,7 @@ fun ChatScreen() {
             activeId = chatState.sessionId,
             onToggle = { showSessions = !showSessions },
             onShowTasks = { showTasks = true },
+            attentionCount = attentionCount,
             onRename = { target, title -> vm.chat.renameSession(target.id, title) },
             onDelete = { target ->
                 vm.chat.deleteSession(target.id) {
@@ -244,6 +248,7 @@ private fun SessionBar(
     onSelect: (dev.ryan.opencode.core.model.Session) -> Unit,
     onNew: () -> Unit,
     onShowTasks: () -> Unit,
+    attentionCount: Int = 0,
     onRename: (Session, String) -> Unit,
     onDelete: (Session) -> Unit,
     onRefresh: () -> Unit,
@@ -320,7 +325,15 @@ private fun SessionBar(
             if (busy) CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp)
             IconButton(onClick = onRefresh) { Icon(Icons.Filled.Refresh, "Resync", Modifier.size(19.dp)) }
             IconButton(onClick = onNew) { Icon(Icons.Filled.Add, "New session", Modifier.size(21.dp)) }
-            IconButton(onClick = onShowTasks) { Icon(Icons.Filled.Checklist, "Tasks", Modifier.size(21.dp)) }
+            IconButton(onClick = onShowTasks) {
+                BadgedBox(
+                    badge = {
+                        if (attentionCount > 0) Badge { Text("$attentionCount") }
+                    },
+                ) {
+                    Icon(Icons.Filled.Checklist, "Tasks", Modifier.size(21.dp))
+                }
+            }
         }
 
         DropdownMenu(expanded = expanded, onDismissRequest = onToggle) {

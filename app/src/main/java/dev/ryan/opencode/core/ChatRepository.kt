@@ -17,6 +17,8 @@ import dev.ryan.opencode.core.net.StreamSignal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
@@ -457,11 +459,38 @@ class ChatRepository(
     suspend fun refreshPermissions() {
         if (directory.isBlank()) return
         runCatching {
-            val pending = connection.api.pendingPermissions(directory)
-                .filter { it.sessionID == _state.value.sessionId }
-            _state.value = _state.value.copy(pendingApprovals = pending)
+            val all = connection.api.pendingPermissions(directory)
+            val openId = _state.value.sessionId
+            _state.value = _state.value.copy(
+                pendingApprovals = all.filter { it.sessionID == openId },
+            )
+            // Deliberately *not* filtered to the open session. A permission
+            // request on some other conversation is exactly the thing you would
+            // otherwise never learn about, and it blocks that session until
+            // answered — so it needs to be visible from here, not only from inside
+            // that conversation.
+            _attention.value = all
+                .filter { it.sessionID != openId }
+                .groupBy { it.sessionID }
         }
     }
+
+    /**
+     * Sessions other than the open one that are waiting on an approval.
+     *
+     * This is the cheap half of multi-session awareness: it does not change the
+     * event pipeline or let two conversations run in one view, but it removes the
+     * failure where work stalls silently in a background conversation.
+     */
+    private val _attention =
+        MutableStateFlow<Map<String?, List<dev.ryan.opencode.core.model.PermissionRequest>>>(emptyMap())
+    val attention: StateFlow<Map<String?, List<dev.ryan.opencode.core.model.PermissionRequest>>> =
+        _attention.asStateFlow()
+
+    /** How many background sessions are blocked, for a badge. */
+    val attentionCount: StateFlow<Int> = _attention
+        .map { it.size }
+        .stateIn(scope, kotlinx.coroutines.flow.SharingStarted.Eagerly, 0)
 
     // ---- task queue, sub-agents, agents ----
 
