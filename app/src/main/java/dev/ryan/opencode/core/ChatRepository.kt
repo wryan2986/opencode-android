@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import dev.ryan.opencode.core.model.InboxItem
 import dev.ryan.opencode.core.model.AgentInfo
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * What the chat screen renders. Built by folding the event stream onto the
@@ -58,6 +60,21 @@ sealed interface ChatItem {
 
     enum class ToolStatus { Running, Done, Failed }
 }
+
+/**
+ * Lightweight per-session liveness, for sessions that are not on screen.
+ *
+ * The full conversation for a background session is not held — the server owns it
+ * and [resync] rebuilds on open. What is tracked here is only what the UI needs to
+ * decide whether to nag you: is it working, and did it say something.
+ */
+data class SessionRuntime(
+    val sessionId: String = "",
+    val busy: Boolean = false,
+    val unread: Int = 0,
+    val awaitingApproval: Int = 0,
+    val title: String = "",
+)
 
 /** Live state for one session. */
 data class ChatState(
@@ -94,6 +111,11 @@ class ChatRepository(
     private val _liveText = MutableStateFlow("")
     val liveText: StateFlow<String> = _liveText.asStateFlow()
 
+    private val _runtimes = MutableStateFlow<Map<String, SessionRuntime>>(emptyMap())
+
+    /** Every session seen this session, keyed by id. Drives the tab strip. */
+    val runtimes: StateFlow<Map<String, SessionRuntime>> = _runtimes.asStateFlow()
+
     private var directory: String = ""
     private var toolBuffers = mutableMapOf<String, ToolEvent>()
 
@@ -101,7 +123,10 @@ class ChatRepository(
         scope.launch {
             connection.events.collect { signal ->
                 when (signal) {
-                    is StreamSignal.Event -> onEvent(signal.event)
+                    is StreamSignal.Event -> {
+                        trackBackground(signal.event)
+                        onEvent(signal.event)
+                    }
                     is StreamSignal.Open -> refreshSessions()
                     else -> Unit
                 }
@@ -123,6 +148,12 @@ class ChatRepository(
         if (directory.isBlank()) return
         runCatching {
             _sessions.value = connection.api.sessions(directory).sortedByDescending { it.time.updated }
+            // Keep tab titles fresh; the runtime store only ever learns an id from
+            // an event, so without this every chip falls back to a truncated id.
+            _runtimes.value = _runtimes.value.mapValues { (id, r) ->
+                _sessions.value.firstOrNull { it.id == id }
+                    ?.let { r.copy(title = it.displayTitle) } ?: r
+            }
             android.util.Log.i("ChatRepository", "loaded ${_sessions.value.size} sessions in $directory")
             // Auto-open the newest session here rather than in a LaunchedEffect:
             // opening changes the session id, which would cancel the very effect
@@ -135,7 +166,45 @@ class ChatRepository(
         }
     }
 
+    /**
+     * Update liveness for *any* session, including ones not on screen.
+     *
+     * Deliberately additive: every existing handler keeps its
+     * `sessionID == _state.value.sessionId` guard untouched, so the viewed
+     * conversation behaves exactly as before. This only maintains the small summary
+     * the tab strip reads, and it never writes conversation content — a background
+     * session is rebuilt from the server by [resync] when opened.
+     *
+     * Events that carry no session id are ignored rather than guessed at.
+     */
+    private fun trackBackground(event: dev.ryan.opencode.core.model.ServerEvent) {
+        val id = runCatching {
+            event.data["sessionID"]?.jsonPrimitive?.content
+        }.getOrNull()?.takeIf { it.isNotBlank() } ?: return
+
+        val viewing = _state.value.sessionId
+        val current = _runtimes.value[id] ?: SessionRuntime(sessionId = id)
+        if (id == viewing) return
+
+        _runtimes.value = _runtimes.value + (id to when {
+            event.type.endsWith("execution.started") -> current.copy(busy = true)
+            event.type.endsWith("execution.succeeded") ||
+                event.type.endsWith("execution.failed") ||
+                event.type.endsWith("execution.error") -> current.copy(busy = false)
+            event.type.contains("text") || event.type.contains("reasoning") ->
+                current.copy(unread = current.unread + 1)
+            else -> current
+        })
+    }
+
+    /** Mark a session read — called when the user switches to it. */
+    fun markRead(sessionId: String) {
+        _runtimes.value = _runtimes.value + (sessionId to (_runtimes.value[sessionId]
+            ?: SessionRuntime(sessionId = sessionId)).copy(unread = 0))
+    }
+
     suspend fun openSession(sessionId: String) {
+        markRead(sessionId)
         _state.value = ChatState(sessionId = sessionId)
         toolBuffers = mutableMapOf()
         _liveText.value = ""

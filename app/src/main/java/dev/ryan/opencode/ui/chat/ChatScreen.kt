@@ -89,6 +89,8 @@ fun ChatScreen() {
     // the user meant, and it is the behaviour that makes this feel conversational.
     var delivery by remember { mutableStateOf("steer") }
     val attentionCount by vm.chat.attentionCount.collectAsState()
+    val runtimes by vm.chat.runtimes.collectAsState()
+    val allSessions by vm.chat.sessions.collectAsState()
 
     val queue by vm.chat.queue.collectAsState()
     val subAgents by vm.chat.subAgents.collectAsState()
@@ -116,6 +118,17 @@ fun ChatScreen() {
 
     Column(Modifier.fillMaxSize()) {
         ConnectionBanner(connection, reason)
+
+        SessionTabs(
+            runtimes = runtimes,
+            activeId = chatState.sessionId,
+            onSelect = { id ->
+                scope.launch {
+                    vm.chat.openSession(id)
+                    vm.saveSettings { it.setLastSessionId(id) }
+                }
+            },
+        )
 
         SessionBar(
             title = sessions.firstOrNull { it.id == chatState.sessionId }?.displayTitle
