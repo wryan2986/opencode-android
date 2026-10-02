@@ -499,6 +499,49 @@ class ChatRepository(
             .onSuccess { _agents.value = it }
     }
 
+    /**
+     * Rename a session.
+     *
+     * The client already spoke to `PATCH /api/session/{id}`; it just had no UI.
+     * A blank title is refused here rather than sent, because the server will
+     * happily store an empty one and the session then renders as "Untitled".
+     */
+    fun renameSession(id: String, title: String) {
+        val clean = title.trim()
+        if (clean.isEmpty()) return
+        scope.launch {
+            runCatching { connection.api.renameSession(id, clean, directory) }
+                .onSuccess { updated ->
+                    _sessions.value = _sessions.value.map { if (it.id == id) updated else it }
+                }
+                .onFailure {
+                    android.util.Log.w("ChatRepository", "rename failed: ${it.message}")
+                }
+        }
+    }
+
+    /**
+     * Delete a session.
+     *
+     * Deliberately does *not* switch away or refresh the open conversation when
+     * the deleted session is the active one: the caller decides, because quietly
+     * moving the user somewhere else is worse than showing them a session that no
+     * longer exists.
+     */
+    fun deleteSession(id: String, onDeleted: () -> Unit = {}) {
+        scope.launch {
+            runCatching { connection.api.deleteSession(id, directory) }
+                .onSuccess {
+                    _sessions.value = _sessions.value.filterNot { it.id == id }
+                    _subAgents.value = _subAgents.value.filterNot { it.id == id }
+                    onDeleted()
+                }
+                .onFailure {
+                    android.util.Log.w("ChatRepository", "delete failed: ${it.message}")
+                }
+        }
+    }
+
     fun cancelQueued(id: String) {
         val sid = _state.value.sessionId
         scope.launch {

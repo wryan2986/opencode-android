@@ -65,6 +65,10 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.material.icons.filled.Checklist
 import kotlinx.coroutines.delay
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.DeleteOutline
+import dev.ryan.opencode.core.model.Session
+import androidx.compose.material3.AlertDialog
 
 @Composable
 fun ChatScreen() {
@@ -119,6 +123,14 @@ fun ChatScreen() {
             activeId = chatState.sessionId,
             onToggle = { showSessions = !showSessions },
             onShowTasks = { showTasks = true },
+            onRename = { target, title -> vm.chat.renameSession(target.id, title) },
+            onDelete = { target ->
+                vm.chat.deleteSession(target.id) {
+                    if (target.id == chatState.sessionId) {
+                        scope.launch { vm.chat.createSession() }
+                    }
+                }
+            },
             onSelect = { session ->
                 showSessions = false
                 scope.launch {
@@ -232,8 +244,58 @@ private fun SessionBar(
     onSelect: (dev.ryan.opencode.core.model.Session) -> Unit,
     onNew: () -> Unit,
     onShowTasks: () -> Unit,
+    onRename: (Session, String) -> Unit,
+    onDelete: (Session) -> Unit,
     onRefresh: () -> Unit,
 ) {
+    var renaming by remember { mutableStateOf<Session?>(null) }
+    var deleting by remember { mutableStateOf<Session?>(null) }
+
+    renaming?.let { target ->
+        var draft by remember(target.id) { mutableStateOf(target.displayTitle) }
+        AlertDialog(
+            onDismissRequest = { renaming = null },
+            title = { Text("Rename session") },
+            text = {
+                OutlinedTextField(
+                    value = draft,
+                    onValueChange = { draft = it },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = { onRename(target, draft); renaming = null },
+                    enabled = draft.isNotBlank(),
+                ) { Text("Save") }
+            },
+            dismissButton = { TextButton(onClick = { renaming = null }) { Text("Cancel") } },
+        )
+    }
+
+    // Confirmation, because this is irreversible and a mis-tap in a list of fifty
+    // sessions is easy.
+    deleting?.let { target ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete session?") },
+            text = {
+                Text(
+                    "\"${target.displayTitle}\" will be removed on the server. " +
+                        "This cannot be undone.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { onDelete(target); deleting = null }) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
+    }
+
     Box {
         Row(
             Modifier.fillMaxWidth()
@@ -278,9 +340,30 @@ private fun SessionBar(
                         }
                     },
                     onClick = { onSelect(s) },
-                    trailingIcon = if (s.id == activeId) {
-                        { Text("•", color = MaterialTheme.colorScheme.primary) }
-                    } else null,
+                    trailingIcon = {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (s.id == activeId) {
+                                Text("•", color = MaterialTheme.colorScheme.primary)
+                            }
+                            IconButton(
+                                onClick = { renaming = s },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(Icons.Filled.Edit, "Rename", Modifier.size(15.dp))
+                            }
+                            IconButton(
+                                onClick = { deleting = s },
+                                modifier = Modifier.size(30.dp),
+                            ) {
+                                Icon(
+                                    Icons.Filled.DeleteOutline,
+                                    "Delete",
+                                    Modifier.size(17.dp),
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    },
                 )
             }
         }

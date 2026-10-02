@@ -315,12 +315,31 @@ enum class DisconnectReason {
 data class InboxItem(
     val id: String = "",
     val type: String = "user",
-    val text: String = "",
     val delivery: String = "queue",
-    val created: Long = 0,
+    val payload: InboxPayload = InboxPayload(),
+    val time: InboxTime = InboxTime(),
 ) {
+    /** The instruction text, which the server nests under `payload`. */
+    val text: String get() = payload.text
+    val created: Long get() = time.created
     val isSteer: Boolean get() = delivery == "steer"
 
     /** One line, collapsed — the queue is read at a glance, not studied. */
     val summary: String get() = text.trim().replace(Regex("\\s+"), " ").take(90)
 }
+
+/**
+ * The instruction body of an inbox item.
+ *
+ * Nested rather than flattened because that is the wire shape. A `text` at the top
+ * level decodes to an empty string and every queued row renders blank, which is
+ * indistinguishable from an empty queue.
+ */
+@kotlinx.serialization.Serializable
+data class InboxPayload(
+    val text: String = "",
+    val metadata: kotlinx.serialization.json.JsonObject? = null,
+)
+
+@kotlinx.serialization.Serializable
+data class InboxTime(val created: Long = 0)
