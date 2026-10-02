@@ -186,15 +186,20 @@ class ChatRepository(
         val current = _runtimes.value[id] ?: SessionRuntime(sessionId = id)
         if (id == viewing) return
 
-        _runtimes.value = _runtimes.value + (id to when {
-            event.type.endsWith("execution.started") -> current.copy(busy = true)
-            event.type.endsWith("execution.succeeded") ||
-                event.type.endsWith("execution.failed") ||
-                event.type.endsWith("execution.error") -> current.copy(busy = false)
-            event.type.contains("text") || event.type.contains("reasoning") ->
-                current.copy(unread = current.unread + 1)
+        // Matched on the EventTypes constants, never on substrings of the wire
+        // name. An earlier version used `contains("text")`, which also matched
+        // text.started and text.ended — three increments for one sentence, so the
+        // unread counter was noise. One increment per message, on the edge.
+        _runtimes.value = _runtimes.value + (id to when (event.type) {
+            EventTypes.EXECUTION_STARTED -> current.copy(busy = true)
+            EventTypes.EXECUTION_SUCCEEDED,
+            EventTypes.EXECUTION_ERROR,
+            EventTypes.SESSION_IDLE,
+            -> current.copy(busy = false)
+            EventTypes.TEXT_STARTED -> current.copy(unread = current.unread + 1)
             else -> current
         })
+
     }
 
     /** Mark a session read — called when the user switches to it. */
